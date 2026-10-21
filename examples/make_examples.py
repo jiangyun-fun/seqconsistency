@@ -72,6 +72,10 @@ def make_pe(
 
 
 def make_bam(path: Path, n: int, seed: int, gc: float = 0.5) -> Path:
+    """Complete paired BAM: BOTH mates of every fragment (R1 leftmost FR, R2
+    rightmost), globally coordinate-sorted. First-in-pair-only fixtures would
+    leave the R2 stratum empty and per-mate comparisons correctly report
+    insufficient evidence."""
     import pysam
 
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -81,22 +85,29 @@ def make_bam(path: Path, n: int, seed: int, gc: float = 0.5) -> Path:
         "RG": [{"ID": "rg1", "SM": "sample1", "LB": "lib1"}],
     }
     rng = np.random.default_rng(seed)
+    pending: list[tuple[int, int, str, np.ndarray, np.ndarray, int]] = []
+    for i in range(n):
+        pos = int(rng.integers(0, 5_000_000 - 400))
+        u = rng.random(100)
+        seq = np.where(u < 0.5, ord("A"), ord("T")).astype(np.uint8)
+        gc_mask = rng.random(100) < gc
+        seq[gc_mask] = rng.choice(np.frombuffer(b"GC", dtype=np.uint8), size=int(gc_mask.sum()))
+        qual = np.clip(rng.normal(33, 4, 100), 2, 41).astype(np.uint8)
+        pending.append((pos, 99, f"ex{i}", seq, qual, 300))  # R1: leftmost, TLEN+
+        pending.append((pos + 200, 147, f"ex{i}", seq, qual, -300))  # R2: rightmost
+    pending.sort(key=lambda r: r[0])
     with pysam.AlignmentFile(str(path), "wb", header=header) as out:
-        for i, pos in enumerate(np.sort(rng.integers(0, 5_000_000 - 200, size=n))):
-            u = rng.random(100)
-            seq = np.where(u < 0.5, ord("A"), ord("T")).astype(np.uint8)
-            gc_mask = rng.random(100) < gc
-            seq[gc_mask] = rng.choice(np.frombuffer(b"GC", dtype=np.uint8), size=int(gc_mask.sum()))
+        for pos, flag, name, seq, qual, tlen in pending:
             a = pysam.AlignedSegment(out.header)
-            a.query_name = f"ex{i}"
+            a.query_name = name
             a.query_sequence = seq.tobytes().decode()
-            a.query_qualities = np.clip(rng.normal(33, 4, 100), 2, 41).astype(np.uint8)
-            a.flag = 99
+            a.query_qualities = qual
+            a.flag = flag
             a.reference_id = 0
-            a.reference_start = int(pos)
+            a.reference_start = pos
             a.cigarstring = "100M"
             a.mapping_quality = 60
-            a.template_length = 300
+            a.template_length = tlen
             out.write(a)
     return path
 
