@@ -24,6 +24,7 @@ from seqconsistency.models import (
     DatasetOutcome,
     FastqFileStats,
     Histogram,
+    ReadType,
     SamplingMode,
 )
 
@@ -489,11 +490,40 @@ def _bam_rows(dataset_id: str, pool_group: str, outcome: DatasetOutcome) -> list
         var = float((counts * np.arange(counts.size) ** 2).sum() / n - mean_mapq**2)
         add("mapq", "mean", mean_mapq, "mapq", int(n), int(n))
         add("mapq", "std", math.sqrt(max(var, 0.0)), "mapq", int(n), int(n))
-    rows.extend(
-        _sample_quantile_rows(
-            dataset_id, pool_group, comp, STRATUM_READS, bam.sample_reads, bam.sampled_count
+    pooled_count = bam.sampled_count - bam.sampled_count_r1 - bam.sampled_count_r2
+    # READS holds every eligible record for unpaired/long-read profiles, and only
+    # the unpaired records of a paired BAM. For paired profiles without unpaired
+    # records the stratum is empty by design — no placeholder rows.
+    if pooled_count or outcome.spec.read_type is not ReadType.PAIRED_SHORT:
+        rows.extend(
+            _sample_quantile_rows(
+                dataset_id, pool_group, comp, STRATUM_READS, bam.sample_reads, pooled_count
+            )
         )
-    )
+    # Per-mate sample statistics for paired profiles (R1 vs R1, R2 vs R2
+    # comparisons; spec §6.2 applied to BAM).
+    if bam.sampled_count_r1:
+        rows.extend(
+            _sample_quantile_rows(
+                dataset_id,
+                pool_group,
+                comp,
+                STRATUM_R1,
+                bam.sample_r1,
+                bam.sampled_count_r1,
+            )
+        )
+    if bam.sampled_count_r2:
+        rows.extend(
+            _sample_quantile_rows(
+                dataset_id,
+                pool_group,
+                comp,
+                STRATUM_R2,
+                bam.sample_r2,
+                bam.sampled_count_r2,
+            )
+        )
     if bam.sample_inserts:
         mean, std, median, p10, p90 = _sample_stats(bam.sample_inserts)
         for statistic, value in (
@@ -767,43 +797,52 @@ def distribution_rows(outcome: DatasetOutcome) -> list[dict[str, Any]]:
                         SamplingMode.FULL_SCAN,
                     )
                 )
-        # Sample-based per-read GC / N / mean-quality histograms for BAM.
-        if bam.sampled_count:
-            gc_hist = dist.make_histogram(
-                "per_read_gc", bam.sample_reads["gc_fraction"], dist.GC_EDGES
-            )
+        # Sample-based per-read GC / N / mean-quality histograms and joint
+        # summaries for BAM: per mate (R1/R2) for paired profiles, pooled READS
+        # for unpaired/long-read profiles and for the unpaired records of a
+        # paired BAM.
+        pooled_count = bam.sampled_count - bam.sampled_count_r1 - bam.sampled_count_r2
+        bam_strata = (
+            [(STRATUM_R1, bam.sample_r1), (STRATUM_R2, bam.sample_r2)]
+            if bam.sampled_count_r1 or bam.sampled_count_r2
+            else []
+        )
+        if pooled_count or not bam_strata:
+            bam_strata.append((STRATUM_READS, bam.sample_reads))
+        for stratum, sample in bam_strata:
+            if not sample:
+                continue
+            gc_hist = dist.make_histogram("per_read_gc", sample["gc_fraction"], dist.GC_EDGES)
             rows.extend(
                 _hist_rows(
                     spec.dataset_id,
                     spec.pool_group,
                     "alignment",
-                    STRATUM_READS,
+                    stratum,
                     gc_hist,
                     SamplingMode.SAMPLE,
                 )
             )
-            n_hist = dist.make_histogram("per_read_n", bam.sample_reads["n_fraction"], dist.N_EDGES)
+            n_hist = dist.make_histogram("per_read_n", sample["n_fraction"], dist.N_EDGES)
             rows.extend(
                 _hist_rows(
                     spec.dataset_id,
                     spec.pool_group,
                     "alignment",
-                    STRATUM_READS,
+                    stratum,
                     n_hist,
                     SamplingMode.SAMPLE,
                 )
             )
             mq_hist = dist.make_histogram(
-                "per_read_mean_quality",
-                bam.sample_reads["mean_quality_arithmetic"],
-                dist.MEANQ_EDGES,
+                "per_read_mean_quality", sample["mean_quality_arithmetic"], dist.MEANQ_EDGES
             )
             rows.extend(
                 _hist_rows(
                     spec.dataset_id,
                     spec.pool_group,
                     "alignment",
-                    STRATUM_READS,
+                    stratum,
                     mq_hist,
                     SamplingMode.SAMPLE,
                 )
@@ -813,9 +852,9 @@ def distribution_rows(outcome: DatasetOutcome) -> list[dict[str, Any]]:
                     spec.dataset_id,
                     spec.pool_group,
                     "alignment",
-                    STRATUM_READS,
-                    bam.sample_reads["length"],
-                    bam.sample_reads["mean_quality_arithmetic"],
+                    stratum,
+                    sample["length"],
+                    sample["mean_quality_arithmetic"],
                     spec.read_type in SHORT_PROFILES,
                 )
             )
@@ -873,7 +912,7 @@ def sampling_summary(outcome: DatasetOutcome) -> dict[str, Any]:
         unit = "mate_pair" if outcome.spec.is_paired_fastq else "read"
     elif outcome.bam is not None:
         eligible = outcome.bam.eligible_observations
-        sampled = outcome.bam.sampled_count
+        sampled = outcome.bam.sampled_count  # total across read strata
         unit = "primary_record"
     else:
         raise AssertionError("outcome carries neither fastq nor bam result")

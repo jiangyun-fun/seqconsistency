@@ -120,12 +120,20 @@ def bam_metrics(read_type: ReadType) -> tuple[MetricDefinition, ...]:
 
     Insert size exists only for paired-end data (`paired_short`); applying it to
     unpaired or long-read BAMs would demand evidence those layouts cannot produce.
+    For `paired_short`, read-level sample metrics compare per mate (R1 vs R1,
+    R2 vs R2), mirroring PE FASTQ (spec §6.2): pooling both mates into one READS
+    distribution hides anti-correlated mate shifts (one mate better, the other
+    worse) as a false match. `mapq` stays on the pooled `READS` stratum — it is a
+    full-scan histogram over every mapped primary record, mate-independent.
     """
+    read_strata: tuple[str, ...] = (
+        (STRATUM_R1, STRATUM_R2) if read_type is ReadType.PAIRED_SHORT else (STRATUM_READS,)
+    )
     base = (
-        MetricDefinition("read_length", METHOD_WASSERSTEIN, (STRATUM_READS,), "bp"),
-        MetricDefinition("mean_read_quality", METHOD_WASSERSTEIN, (STRATUM_READS,), "phred"),
-        MetricDefinition("gc_content", METHOD_JSD, (STRATUM_READS,), "jsd_base2"),
-        MetricDefinition("n_content", METHOD_JSD, (STRATUM_READS,), "jsd_base2"),
+        MetricDefinition("read_length", METHOD_WASSERSTEIN, read_strata, "bp"),
+        MetricDefinition("mean_read_quality", METHOD_WASSERSTEIN, read_strata, "phred"),
+        MetricDefinition("gc_content", METHOD_JSD, read_strata, "jsd_base2"),
+        MetricDefinition("n_content", METHOD_JSD, read_strata, "jsd_base2"),
         MetricDefinition("mapq", METHOD_JSD, (STRATUM_READS,), "jsd_base2"),
     )
     if read_type is ReadType.PAIRED_SHORT:
@@ -209,6 +217,17 @@ def _prepare_dataset(
     return _Prepared(w=w, jsd=jsd)
 
 
+def _bam_sample(outcome: DatasetOutcome, stratum: str) -> dict[str, list[float]]:
+    """Per-stratum BAM read sample: R1/R2 for paired profiles, pooled READS else
+    (and for unpaired records inside paired BAMs)."""
+    assert outcome.bam is not None
+    if stratum == STRATUM_R1:
+        return outcome.bam.sample_r1
+    if stratum == STRATUM_R2:
+        return outcome.bam.sample_r2
+    return outcome.bam.sample_reads
+
+
 def _raw_wasserstein(outcome: DatasetOutcome, metric: str, stratum: str) -> np.ndarray:
     key = "length" if metric == "read_length" else "mean_quality_arithmetic"
     if outcome.fastq is not None:
@@ -219,7 +238,7 @@ def _raw_wasserstein(outcome: DatasetOutcome, metric: str, stratum: str) -> np.n
     assert outcome.bam is not None
     if metric == "insert_size":
         return np.asarray(outcome.bam.sample_inserts, dtype=np.float64)
-    return np.asarray(outcome.bam.sample_reads.get(key, []), dtype=np.float64)
+    return np.asarray(_bam_sample(outcome, stratum).get(key, []), dtype=np.float64)
 
 
 def _hist_for(outcome: DatasetOutcome, metric: str, stratum: str) -> dist.Histogram | None:
@@ -250,11 +269,11 @@ def _hist_for(outcome: DatasetOutcome, metric: str, stratum: str) -> dist.Histog
     assert outcome.bam is not None
     if metric == "gc_content":
         return dist.make_histogram(
-            "per_read_gc", outcome.bam.sample_reads["gc_fraction"], dist.GC_EDGES
+            "per_read_gc", _bam_sample(outcome, stratum)["gc_fraction"], dist.GC_EDGES
         )
     if metric == "n_content":
         return dist.make_histogram(
-            "per_read_n", outcome.bam.sample_reads["n_fraction"], dist.N_EDGES
+            "per_read_n", _bam_sample(outcome, stratum)["n_fraction"], dist.N_EDGES
         )
     if metric == "mapq":
         return outcome.bam.mapq_hist

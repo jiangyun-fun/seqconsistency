@@ -304,7 +304,55 @@ def test_undefined_rg_records_counted(tmp_path: Path):
 def test_bam_reservoir_batching_matches_expectations(tmp_path: Path):
     p = make_bam(tmp_path / "batch.bam", n=3000, seed=99)
     res = scan_bam("ds", p, ReadType.PAIRED_SHORT, SAMPLING, 500)
+    # make_bam emits first-in-pair records only, so the R1 mate reservoir
+    # receives every eligible record and the pooled READS stratum stays empty.
     assert res.sampled_count == 500
-    assert res.sampled_count == len(res.sample_reads["length"])
+    assert res.sampled_count_r1 == 500
+    assert res.sampled_count_r2 == 0
+    assert res.sampled_count == len(res.sample_r1["length"])
     # Keys are unique; sorted output must contain distinct lengths of the right count.
-    assert len(set(res.sample_reads["length"])) <= 500
+    assert len(set(res.sample_r1["length"])) <= 500
+
+
+def test_paired_bam_samples_mates_separately(tmp_path: Path):
+    # Paired profiles route paired records to per-mate reservoirs (R1 vs R1,
+    # R2 vs R2 comparisons); unpaired records stay in the pooled READS sample.
+    # Unpaired/long-read profiles keep one pooled sample.
+    import pysam
+
+    header = {"HD": {"SO": "coordinate"}, "SQ": [{"SN": "chr1", "LN": 100000}]}
+    p = tmp_path / "mixed.bam"
+    with pysam.AlignmentFile(str(p), "wb", header=header) as out:
+        for i in range(30):
+            for flag, tlen in ((99, 300), (147, -300)):  # full pair, both mates
+                a = pysam.AlignedSegment(out.header)
+                a.query_name = f"pair{i}"
+                a.query_sequence = "ACGT" * 25
+                a.query_qualities = np.full(100, 30, dtype=np.uint8)
+                a.flag = flag
+                a.reference_id = 0
+                a.reference_start = i * 500 + (200 if flag == 147 else 0)
+                a.cigarstring = "100M"
+                a.mapping_quality = 60
+                a.template_length = tlen
+                out.write(a)
+        u = pysam.AlignedSegment(out.header)
+        u.query_name = "single"
+        u.query_sequence = "ACGT" * 25
+        u.query_qualities = np.full(100, 30, dtype=np.uint8)
+        u.flag = 0
+        u.reference_id = 0
+        u.reference_start = 99000
+        u.cigarstring = "100M"
+        u.mapping_quality = 60
+        out.write(u)
+    res = scan_bam("ds", p, ReadType.PAIRED_SHORT, SAMPLING, 100)
+    assert res.sampled_count_r1 == 30
+    assert res.sampled_count_r2 == 30
+    assert len(res.sample_reads["length"]) == 1  # the unpaired record
+    assert res.sampled_count == 61
+    # Same file under a long-read profile: one pooled stratum, no mate split.
+    res_ont = scan_bam("ds", p, ReadType.ONT, SAMPLING, 100)
+    assert res_ont.sampled_count == 61
+    assert res_ont.sampled_count_r1 == 0
+    assert len(res_ont.sample_reads["length"]) == 61

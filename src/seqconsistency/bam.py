@@ -20,6 +20,12 @@ Design (README § BAM processing):
   eligible primary records (``sampling_mode=sample``): pysam per-record sequence
   access dominates scan cost, so full-file sequence extraction is deliberately not
   performed. Category counters and length/MAPQ/insert-size histograms are full-scan.
+- For the ``paired_short`` profile the read-level sample is split per mate
+  (first-in-pair vs second-in-pair flags): comparisons are R1 vs R1 and R2 vs R2,
+  mirroring PE FASTQ (spec §6.2), so anti-correlated mate shifts (one mate better,
+  the other worse) cannot cancel out in a pooled distribution. Unpaired primary
+  records in a paired BAM stay in the pooled ``READS`` sample, reported but not
+  compared when empty. Unpaired/long-read profiles keep one pooled sample.
 - Missing base qualities or sequence count as unavailable (never zero) and are
   reported through dedicated full-scan counters.
 - Duplicate-marked fractions depend on upstream processing; they are never
@@ -149,20 +155,34 @@ def scan_bam(
         buf_len: list[int] = []
 
         rng = np.random.default_rng(dataset_seed(sampling.master_seed, dataset_id))
+        split_mates = read_type is ReadType.PAIRED_SHORT
         reservoir = FeatureReservoir(sample_size)
+        r1_reservoir = FeatureReservoir(sample_size) if split_mates else None
+        r2_reservoir = FeatureReservoir(sample_size) if split_mates else None
         insert_reservoir = FeatureReservoir(sample_size)
         # Candidate buffers: reservoir updates are merged in chunks so filling
         # stays near-linear instead of quadratic in the sample size.
         cand_rows: list[tuple[float, tuple]] = []
+        cand_r1: list[tuple[float, tuple]] = []
+        cand_r2: list[tuple[float, tuple]] = []
         cand_inserts: list[tuple[float, float]] = []
 
-        def _flush_candidates() -> None:
-            if cand_rows:
-                reservoir.add_block(
-                    np.array([r for _, r in cand_rows], dtype=np.float64),
-                    keys=np.array([k for k, _ in cand_rows], dtype=np.float64),
+        def _flush_rows(
+            buf: list[tuple[float, tuple]], res: FeatureReservoir | None
+        ) -> None:
+            if buf and res is not None:
+                res.add_block(
+                    np.array([r for _, r in buf], dtype=np.float64),
+                    keys=np.array([k for k, _ in buf], dtype=np.float64),
                 )
-                cand_rows.clear()
+                buf.clear()
+
+        def _flush_candidates() -> None:
+            # Batched candidates: reservoir updates are merged in chunks, never
+            # per record (per-record updates made filling quadratic).
+            _flush_rows(cand_rows, reservoir)
+            _flush_rows(cand_r1, r1_reservoir)
+            _flush_rows(cand_r2, r2_reservoir)
 
         def _flush_insert_candidates() -> None:
             if cand_inserts:
@@ -276,11 +296,20 @@ def scan_bam(
                     if record.query_qualities is None:
                         flags.records_missing_qualities += 1
                     key = float(rng.random())
-                    if key < reservoir.threshold or not reservoir.is_full:
+                    if split_mates and (flag & FLAG_PAIRED):
+                        # Paired record: route to its mate stratum (R1 vs R1,
+                        # R2 vs R2 comparisons; see module docstring).
+                        if flag & FLAG_FIRST:
+                            buf, res = cand_r1, r1_reservoir
+                        else:
+                            buf, res = cand_r2, r2_reservoir
+                    else:
+                        buf, res = cand_rows, reservoir
+                    if res is not None and (key < res.threshold or not res.is_full):
                         # Batched candidates (see comment above).
-                        cand_rows.append((key, _record_features(record)))
-                        if len(cand_rows) >= CANDIDATE_FLUSH:
-                            _flush_candidates()
+                        buf.append((key, _record_features(record)))
+                        if len(buf) >= CANDIDATE_FLUSH:
+                            _flush_rows(buf, res)
                 if len(buf_mapq) >= HIST_FLUSH_RECORDS:
                     mapq_acc.add_values(buf_mapq)
                     buf_mapq = []
@@ -314,7 +343,11 @@ def scan_bam(
         insert_hist=insert_acc.result(),
         length_hist=length_acc.result(),
         sample_reads=reservoir.sample(),
-        sampled_count=reservoir.sampled_count,
+        sampled_count=(
+            reservoir.sampled_count
+            + (r1_reservoir.sampled_count if r1_reservoir else 0)
+            + (r2_reservoir.sampled_count if r2_reservoir else 0)
+        ),
         scan_seconds=time.perf_counter() - started,
         records_read=record_no,
         length_sum=length_sum,
@@ -324,4 +357,8 @@ def scan_bam(
         insert_sqsum=insert_sqsum,
         insert_n=insert_n,
         sample_inserts=insert_reservoir.sample()["length"],
+        sample_r1=r1_reservoir.sample() if r1_reservoir else {},
+        sample_r2=r2_reservoir.sample() if r2_reservoir else {},
+        sampled_count_r1=r1_reservoir.sampled_count if r1_reservoir else 0,
+        sampled_count_r2=r2_reservoir.sampled_count if r2_reservoir else 0,
     )

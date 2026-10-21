@@ -282,6 +282,80 @@ def test_bam_group_end_to_end(tmp_path: Path):
     assert decisions[0]["identity_evidence_level"] == "declared_not_verified"
 
 
+def _mate_swapped_bam(path: Path, n: int, q1: int, q2: int, seed: int) -> Path:
+    """Paired BAM: R1 at uniform q1, R2 at uniform q2 (R1 leftmost, FR)."""
+    import numpy as np
+    import pysam
+
+    header = {
+        "HD": {"SO": "coordinate"},
+        "SQ": [{"SN": "chr1", "LN": 1_000_000, "M5": "6a9a0c1f2b3d4e5f60718293a4b5c6d7"}],
+        "RG": [{"ID": "rg1", "SM": "s", "LB": "l", "PL": "ILLUMINA"}],
+    }
+    rng = np.random.default_rng(seed)
+    with pysam.AlignmentFile(str(path), "wb", header=header) as out:
+        for i in range(n):
+            p = 1000 + i * 400
+            seq = "".join(rng.choice(list("ACGT"), size=100))
+            for pos, flag, tlen, q in (
+                (p, 0x1 | 0x2 | 0x40, 300, q1),
+                (p + 200, 0x1 | 0x2 | 0x80 | 0x10, -300, q2),
+            ):
+                seg = pysam.AlignedSegment(out.header)
+                seg.query_name = f"r{i}"
+                seg.query_sequence = seq
+                seg.query_qualities = np.full(100, q + 33, dtype=np.uint8)
+                seg.reference_id = 0
+                seg.reference_start = pos
+                seg.mapping_quality = 60
+                seg.cigarstring = "100M"
+                seg.flag = flag
+                seg.template_length = tlen
+                out.write(seg)
+    return path
+
+
+def test_bam_mate_swapped_qualities_detected_per_mate(tmp_path: Path):
+    # Review round 2, point 1: pooling mates into one READS distribution made
+    # anti-correlated mate shifts (A: R1 Q10/R2 Q40; B: swapped) compare as
+    # identical and approve COMPATIBLE. Per-mate comparisons must catch it.
+    from helpers import run_cli
+
+    a = _mate_swapped_bam(tmp_path / "a.bam", 500, q1=10, q2=40, seed=1)
+    b = _mate_swapped_bam(tmp_path / "b.bam", 500, q1=40, q2=10, seed=1)
+    rows = [
+        {
+            "dataset_id": ds,
+            "pool_group": "g",
+            "sample_id": "s",
+            "library_id": "l",
+            "assay": "WGS",
+            "platform": "ILLUMINA",
+            "read_type": "paired_short",
+            "input_format": "bam",
+            "path1": str(p),
+            "processing_id": "p1",
+            "reference_id": "hg38",
+        }
+        for ds, p in (("a", a), ("b", b))
+    ]
+    manifest = write_tsv_manifest(tmp_path / "m.tsv", rows)
+    policy = write_policy(tmp_path / "p.yaml")
+    result, out, _ = run_cli(tmp_path / "run", manifest, policy, expect_code=1)
+    comparisons = pq.read_table(out["comparisons"]).to_pylist()
+    qual = {
+        (r["stratum"]): r
+        for r in comparisons
+        if r["metric"] == "mean_read_quality" and r["dataset_a"] == "a"
+    }
+    assert set(qual) == {"R1", "R2"}, "per-mate strata expected for paired BAM"
+    for stratum in ("R1", "R2"):
+        assert qual[stratum]["status"] == "EXCEED"
+        assert qual[stratum]["value"] == 30.0  # Q10 vs Q40 on both mates
+    decisions = pq.read_table(out["decisions"]).to_pylist()
+    assert decisions[0]["overall_decision"] == "REVIEW"
+
+
 def test_reproducible_across_worker_counts(tmp_path: Path):
     from helpers import run_cli
 

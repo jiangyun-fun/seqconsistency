@@ -315,7 +315,7 @@ class BamScanResult:
     insert_hist: Histogram | None
     length_hist: Histogram | None
     sample_reads: dict[str, list[float]]
-    sampled_count: int
+    sampled_count: int  # total records sampled across all read strata
     scan_seconds: float
     records_read: int
     length_sum: int = 0
@@ -325,6 +325,13 @@ class BamScanResult:
     insert_sqsum: int = 0
     insert_n: int = 0
     sample_inserts: list[float] = field(default_factory=list)
+    # Per-mate samples for paired profiles (R1 vs R1, R2 vs R2 comparisons,
+    # mirroring PE FASTQ). Empty for unpaired/long-read profiles, where
+    # sample_reads holds every eligible record.
+    sample_r1: dict[str, list[float]] = field(default_factory=dict)
+    sample_r2: dict[str, list[float]] = field(default_factory=dict)
+    sampled_count_r1: int = 0
+    sampled_count_r2: int = 0
 
 
 @dataclass

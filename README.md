@@ -306,11 +306,16 @@ FASTQ (per stratum R1/R2/SE, full-scan unless noted):
   per-cycle metrics (no fixed cycles exist) — reported as not applicable, never
   faked.
 
-BAM (stratum `READS`, plus `PAIR` for insert size): category counts and fractions with
-exact denominators (primary records; paired fraction over primary; properly-paired
-over paired), mapped/unmapped fractions, duplicate/QC-fail fractions, mean/std MAPQ,
-insert-size mean/std (full-scan sums) plus sample quantiles, eligible-primary read
-count, missing-quality/sequence counts, and the FASTQ-equivalent sampled read metrics.
+BAM (strata `READS` pooled, `R1`/`R2` per mate for `paired_short`, plus `PAIR` for
+insert size): category counts and fractions with exact denominators (primary
+records; paired fraction over primary; properly-paired over paired), mapped/unmapped
+fractions, duplicate/QC-fail fractions, mean/std MAPQ, insert-size mean/std
+(full-scan sums) plus sample quantiles, eligible-primary read count,
+missing-quality/sequence counts, and the FASTQ-equivalent sampled read metrics. For
+`paired_short`, the sampled read metrics (length, mean quality, GC, N) are kept
+**per mate** (`R1`, `R2`) so comparisons are R1-vs-R1 and R2-vs-R2 — mirroring PE
+FASTQ; the pooled `READS` sample then holds only unpaired records, and `mapq`
+(full-scan over every mapped primary) stays on `READS`.
 
 `merged_short` datasets may carry `fastp_json` evidence: before/after total reads,
 Q30 rates, and a merge rate **only when the report contains an explicit merged-read
