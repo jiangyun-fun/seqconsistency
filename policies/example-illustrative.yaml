@@ -1,0 +1,179 @@
+# seqconsistency example pooling policy — ILLUSTRATIVE, UNCALIBRATED.
+#
+# The thresholds below are round-number placeholders chosen to demonstrate the
+# mechanics. They have NOT been calibrated against genuine between-run variation
+# for any platform, assay, or laboratory. Do not use them for production pooling
+# decisions: collect genuine compatible runs and known incompatibilities for your
+# own platform/assay and calibrate thresholds on that data (README § Threshold
+# calibration). `calibrated: false` records this explicitly and the decision
+# outputs carry the `thresholds_illustrative_uncalibrated` assumption until you
+# replace these values with calibrated ones.
+policy_id: example-illustrative
+policy_version: "1"
+description: >-
+  Example policy for demonstration runs. All thresholds are illustrative and
+  uncalibrated; see the header comment before reuse.
+
+identity:
+  # Accept identical declared sample_id as identity evidence for a technical
+  # pooling decision (reports will state: not independently verified).
+  accept_declared_sample_id: true
+  # v1 implements no independent genotype-based verification; leaving this true
+  # yields INSUFFICIENT_EVIDENCE with a dedicated finding.
+  require_independent_verification: false
+
+metadata:
+  same_sample_id_required: true
+  same_assay_required: true
+  distinct_library_ids: review        # different libraries from one sample -> REVIEW
+  distinct_processing_ids: review     # differing preprocessing -> REVIEW
+  reference_mismatch: incompatible    # differing reference_id -> INCOMPATIBLE
+
+technical:
+  min_observations: 1000
+  # When true, an applicable metric without a threshold blocks COMPATIBLE
+  # (INSUFFICIENT_EVIDENCE) rather than passing silently.
+  require_thresholds: true
+  thresholds:
+    # --- paired_short (short-read PE FASTQ / BAM) ---------------------------
+    - metric: read_length
+      method: wasserstein1
+      max: 10.0                # bp; ILLUSTRATIVE ONLY
+      action: review
+      calibrated: false
+      profiles: [paired_short]
+    - metric: mean_read_quality
+      method: wasserstein1
+      max: 1.5                 # Phred; ILLUSTRATIVE ONLY
+      action: review
+      calibrated: false
+      profiles: [paired_short]
+    - metric: gc_content
+      method: jensenshannon_base2
+      max: 0.03                # ILLUSTRATIVE ONLY
+      action: review
+      calibrated: false
+      profiles: [paired_short]
+    - metric: base_quality
+      method: jensenshannon_base2
+      max: 0.02
+      action: review
+      calibrated: false
+      profiles: [paired_short]
+    - metric: nucleotide_composition
+      method: jensenshannon_base2
+      max: 0.01
+      action: review
+      calibrated: false
+      profiles: [paired_short]
+    - metric: n_content
+      method: jensenshannon_base2
+      max: 0.01
+      action: review
+      calibrated: false
+      profiles: [paired_short]
+    - metric: mapq
+      method: jensenshannon_base2
+      max: 0.05
+      action: review
+      calibrated: false
+      profiles: [paired_short]
+    - metric: insert_size
+      method: wasserstein1
+      max: 20.0               # bp; ILLUSTRATIVE ONLY
+      action: review
+      calibrated: false
+      profiles: [paired_short]
+    # --- merged_short --------------------------------------------------------
+    - metric: read_length
+      method: wasserstein1
+      max: 25.0
+      action: review
+      calibrated: false
+      profiles: [merged_short]
+    - metric: mean_read_quality
+      method: wasserstein1
+      max: 2.0
+      action: review
+      calibrated: false
+      profiles: [merged_short]
+    - metric: gc_content
+      method: jensenshannon_base2
+      max: 0.03
+      action: review
+      calibrated: false
+      profiles: [merged_short]
+    - metric: base_quality
+      method: jensenshannon_base2
+      max: 0.02
+      action: review
+      calibrated: false
+      profiles: [merged_short]
+    - metric: nucleotide_composition
+      method: jensenshannon_base2
+      max: 0.01
+      action: review
+      calibrated: false
+      profiles: [merged_short]
+    - metric: n_content
+      method: jensenshannon_base2
+      max: 0.01
+      action: review
+      calibrated: false
+      profiles: [merged_short]
+    - metric: merge_retained_fraction
+      method: absolute_difference
+      max: 0.10
+      action: review
+      calibrated: false
+      profiles: [merged_short]
+    # --- ont -----------------------------------------------------------------
+    - metric: read_length
+      method: wasserstein1
+      max: 2000.0             # bp; ONT length distributions vary widely
+      action: review
+      calibrated: false
+      profiles: [ont]
+    - metric: mean_read_quality
+      method: wasserstein1
+      max: 2.0
+      action: review
+      calibrated: false
+      profiles: [ont]
+    - metric: gc_content
+      method: jensenshannon_base2
+      max: 0.05
+      action: review
+      calibrated: false
+      profiles: [ont]
+    - metric: n_content
+      method: jensenshannon_base2
+      max: 0.02
+      action: review
+      calibrated: false
+      profiles: [ont]
+    # --- hifi ----------------------------------------------------------------
+    - metric: read_length
+      method: wasserstein1
+      max: 1000.0
+      action: review
+      calibrated: false
+      profiles: [hifi]
+    - metric: mean_read_quality
+      method: wasserstein1
+      max: 2.0
+      action: review
+      calibrated: false
+      profiles: [hifi]
+    - metric: gc_content
+      method: jensenshannon_base2
+      max: 0.03
+      action: review
+      calibrated: false
+      profiles: [hifi]
+    - metric: n_content
+      method: jensenshannon_base2
+      max: 0.02
+      action: review
+      calibrated: false
+      profiles: [hifi]

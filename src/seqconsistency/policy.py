@@ -1,0 +1,838 @@
+"""Pooling policy: strict YAML loading, threshold resolution, and the decision engine.
+
+Decision states (spec §9): ``COMPATIBLE``, ``REVIEW``, ``INCOMPATIBLE``,
+``INSUFFICIENT_EVIDENCE``, plus ``NOT_ASSESSED`` for optional checks that were not
+requested. Aggregation precedence, applied to the four assessed components:
+
+1. Any hard incompatibility (any component ``FAIL``) -> ``INCOMPATIBLE``.
+2. Else any missing required evidence (any component ``MISSING_EVIDENCE`` or
+   ``INSUFFICIENT_OBSERVATIONS``) -> ``INSUFFICIENT_EVIDENCE``.
+3. Else any actionable warning (any component ``REVIEW``) -> ``REVIEW``.
+4. Else ``COMPATIBLE``.
+
+Optional, unrequested checks never block compatibility. A structural validation
+failure never reaches this engine — it aborts the run (exit code 2) beforehand.
+
+Shipped example thresholds are ILLUSTRATIVE AND UNCALIBRATED. They are never
+described as validated; calibration guidance is in the README.
+"""
+
+from __future__ import annotations
+
+import hashlib
+from dataclasses import dataclass, field
+from typing import Any
+
+import yaml
+
+from seqconsistency.comparison import (
+    STATUS_EXCEED,
+    STATUS_INSUFFICIENT_OBSERVATIONS,
+    STATUS_MISSING_EVIDENCE,
+    STATUS_NO_THRESHOLD,
+    ThresholdResolver,
+    ThresholdRule,
+)
+from seqconsistency.errors import ConfigError
+from seqconsistency.models import (
+    CheckStatus,
+    DatasetOutcome,
+    DecisionState,
+    IdentityEvidenceLevel,
+    InputFormat,
+    Severity,
+)
+
+POLICY_SCHEMA_VERSION = "1"
+
+_ACTION_VALUES = ("review", "incompatible")
+_HETERO_VALUES = ("allowed", "review", "incompatible")
+
+#: The exact sentence the spec requires whenever identity rests on metadata only.
+IDENTITY_DECLARED_SENTENCE = (
+    "Sample identity accepted from supplied metadata; not independently verified."
+)
+
+
+@dataclass(frozen=True)
+class ThresholdConfig:
+    metric: str
+    method: str
+    max: float
+    action: str
+    calibrated: bool
+    profiles: tuple[str, ...] | None = None
+    strata: tuple[str, ...] | None = None
+    assays: tuple[str, ...] | None = None
+
+
+@dataclass
+class Policy:
+    policy_id: str
+    policy_version: str
+    description: str
+    accept_declared_sample_id: bool
+    require_independent_verification: bool
+    same_sample_id_required: bool
+    same_assay_required: bool
+    distinct_library_ids: str
+    distinct_processing_ids: str
+    reference_mismatch_action: str
+    require_fastp_evidence: bool
+    require_thresholds: bool
+    min_observations: int
+    thresholds: list[ThresholdConfig]
+    raw_text: str
+    sha256: str
+
+    def resolver_for(self, profile: str, assay: str) -> ThresholdResolver:
+        """Build the (metric, stratum) -> ThresholdRule resolver for one stratum scope."""
+
+        def resolve(metric: str, stratum: str) -> ThresholdRule | None:
+            for t in self.thresholds:
+                if t.metric != metric:
+                    continue
+                if t.profiles is not None and profile not in t.profiles:
+                    continue
+                if t.strata is not None and stratum not in t.strata:
+                    continue
+                if t.assays is not None and assay not in t.assays:
+                    continue
+                return ThresholdRule(t.max, t.action, t.calibrated)
+            return None
+
+        return resolve
+
+
+def _require_keys(mapping: dict, required: set[str], allowed: set[str], where: str) -> None:
+    missing = required - set(mapping)
+    if missing:
+        raise ConfigError(f"policy {where}: missing required key(s) {sorted(missing)}")
+    unknown = set(mapping) - allowed
+    if unknown:
+        raise ConfigError(
+            f"policy {where}: unknown key(s) {sorted(unknown)} — unknown keys are "
+            "rejected, never silently ignored"
+        )
+
+
+def _enum(value: Any, allowed: tuple[str, ...], where: str) -> str:
+    if not isinstance(value, str) or value not in allowed:
+        raise ConfigError(f"policy {where}: expected one of {list(allowed)}, got {value!r}")
+    return value
+
+
+def _looks_like_yaml_text(text: str) -> bool:
+    return "\n" in text or text.lstrip().startswith("{") or ":" in text.split("\n", 1)[0]
+
+
+def load_policy(path_or_text: Any) -> Policy:
+    """Load and strictly validate a policy from a path (str/Path) or YAML text."""
+    if isinstance(path_or_text, str) and _looks_like_yaml_text(path_or_text):
+        raw_text = path_or_text
+    elif isinstance(path_or_text, str):
+        raw_text = _read_file(path_or_text)
+    elif hasattr(path_or_text, "read_text"):
+        raw_text = path_or_text.read_text(encoding="utf-8")
+    else:
+        raw_text = path_or_text
+    try:
+        data = yaml.safe_load(raw_text)
+    except yaml.YAMLError as exc:
+        raise ConfigError(f"policy is not valid YAML: {exc}") from exc
+    if not isinstance(data, dict):
+        raise ConfigError("policy root must be a mapping")
+
+    _require_keys(
+        data,
+        {"policy_id", "policy_version", "identity", "metadata", "technical"},
+        {"policy_id", "policy_version", "description", "identity", "metadata", "technical"},
+        "(root)",
+    )
+    identity = data["identity"]
+    metadata = data["metadata"]
+    technical = data["technical"]
+    for section, name in ((identity, "identity"), (metadata, "metadata"), (technical, "technical")):
+        if not isinstance(section, dict):
+            raise ConfigError(f"policy section {name!r} must be a mapping")
+
+    _require_keys(
+        identity,
+        set(),
+        {"accept_declared_sample_id", "require_independent_verification"},
+        "identity",
+    )
+    _require_keys(
+        metadata,
+        set(),
+        {
+            "same_sample_id_required",
+            "same_assay_required",
+            "distinct_library_ids",
+            "distinct_processing_ids",
+            "reference_mismatch",
+        },
+        "metadata",
+    )
+    _require_keys(
+        technical,
+        {"thresholds", "min_observations"},
+        {"thresholds", "min_observations", "require_thresholds"},
+        "technical",
+    )
+
+    thresholds_raw = technical["thresholds"]
+    if not isinstance(thresholds_raw, list):
+        raise ConfigError("policy technical.thresholds must be a list")
+    thresholds: list[ThresholdConfig] = []
+    for i, t in enumerate(thresholds_raw):
+        where = f"technical.thresholds[{i}]"
+        if not isinstance(t, dict):
+            raise ConfigError(f"policy {where}: each threshold must be a mapping")
+        _require_keys(
+            t,
+            {"metric", "method", "max", "action", "calibrated"},
+            {"metric", "method", "max", "action", "calibrated", "profiles", "strata", "assays"},
+            where,
+        )
+        max_val = t["max"]
+        if not isinstance(max_val, (int, float)) or isinstance(max_val, bool) or max_val < 0:
+            raise ConfigError(f"policy {where}: 'max' must be a non-negative number")
+        thresholds.append(
+            ThresholdConfig(
+                metric=str(t["metric"]),
+                method=str(t["method"]),
+                max=float(max_val),
+                action=_enum(t["action"], _ACTION_VALUES, where),
+                calibrated=bool(t["calibrated"]),
+                profiles=tuple(t["profiles"]) if t.get("profiles") is not None else None,
+                strata=tuple(t["strata"]) if t.get("strata") is not None else None,
+                assays=tuple(t["assays"]) if t.get("assays") is not None else None,
+            )
+        )
+
+    min_obs = technical["min_observations"]
+    if not isinstance(min_obs, int) or isinstance(min_obs, bool) or min_obs < 0:
+        raise ConfigError("policy technical.min_observations must be a non-negative int")
+
+    return Policy(
+        policy_id=str(data["policy_id"]),
+        policy_version=str(data["policy_version"]),
+        description=str(data.get("description", "")),
+        accept_declared_sample_id=bool(identity.get("accept_declared_sample_id", True)),
+        require_independent_verification=bool(
+            identity.get("require_independent_verification", False)
+        ),
+        same_sample_id_required=bool(metadata.get("same_sample_id_required", True)),
+        same_assay_required=bool(metadata.get("same_assay_required", True)),
+        distinct_library_ids=_enum(
+            metadata.get("distinct_library_ids", "review"),
+            _HETERO_VALUES,
+            "metadata.distinct_library_ids",
+        ),
+        distinct_processing_ids=_enum(
+            metadata.get("distinct_processing_ids", "review"),
+            _HETERO_VALUES,
+            "metadata.distinct_processing_ids",
+        ),
+        reference_mismatch_action=_enum(
+            metadata.get("reference_mismatch", "incompatible"),
+            ("review", "incompatible"),
+            "metadata.reference_mismatch",
+        ),
+        require_fastp_evidence=bool(metadata.get("require_fastp_evidence", False)),
+        require_thresholds=bool(technical.get("require_thresholds", True)),
+        min_observations=min_obs,
+        thresholds=thresholds,
+        raw_text=raw_text if isinstance(raw_text, str) else str(raw_text),
+        sha256=hashlib.sha256(
+            (raw_text if isinstance(raw_text, str) else "").encode("utf-8")
+        ).hexdigest(),
+    )
+
+
+def _read_file(path: str) -> str:
+    from pathlib import Path
+
+    try:
+        return Path(path).read_text(encoding="utf-8")
+    except OSError as exc:
+        raise ConfigError(f"cannot read policy file: {exc}") from exc
+
+
+# --------------------------------------------------------------------------
+# Findings and decisions
+# --------------------------------------------------------------------------
+
+
+@dataclass
+class Finding:
+    finding_id: str
+    pool_group: str
+    dataset_id: str | None
+    affected_datasets: list[str]
+    component: str
+    severity: Severity
+    reason_code: str
+    message: str
+    evidence_metric: str | None
+    evidence_value: float | None
+    recommended_action: str
+
+    def to_row(self) -> dict[str, Any]:
+        return {
+            "finding_id": self.finding_id,
+            "pool_group": self.pool_group,
+            "dataset_id": self.dataset_id,
+            "affected_datasets": self.affected_datasets,
+            "component": self.component,
+            "severity": self.severity.value,
+            "reason_code": self.reason_code,
+            "message": self.message,
+            "evidence_metric": self.evidence_metric,
+            "evidence_value": self.evidence_value,
+            "recommended_action": self.recommended_action,
+        }
+
+
+@dataclass
+class GroupDecision:
+    pool_group: str
+    structural_status: CheckStatus
+    technical_status: CheckStatus
+    metadata_status: CheckStatus
+    identity_status: CheckStatus
+    overall_decision: DecisionState
+    identity_evidence_level: IdentityEvidenceLevel
+    assumptions: list[str] = field(default_factory=list)
+    reason_codes: list[str] = field(default_factory=list)
+
+    def to_row(self, policy: Policy) -> dict[str, Any]:
+        return {
+            "pool_group": self.pool_group,
+            "structural_status": self.structural_status.value,
+            "technical_status": self.technical_status.value,
+            "metadata_status": self.metadata_status.value,
+            "identity_status": self.identity_status.value,
+            "overall_decision": self.overall_decision.value,
+            "identity_evidence_level": self.identity_evidence_level.value,
+            "assumptions": self.assumptions,
+            "reason_codes": self.reason_codes,
+            "policy_id": policy.policy_id,
+            "policy_version": policy.policy_version,
+        }
+
+
+def _metadata_findings(
+    outcomes: list[DatasetOutcome], policy: Policy
+) -> tuple[CheckStatus, list[Finding]]:
+    """Metadata compatibility across one pooling group."""
+    specs = [o.spec for o in outcomes]
+    ids = [s.dataset_id for s in specs]
+    group = specs[0].pool_group
+    status = CheckStatus.PASS
+    findings: list[Finding] = []
+
+    def finding(
+        reason: str,
+        message: str,
+        severity: Severity,
+        action: str,
+        metric: str | None = None,
+        value: float | None = None,
+    ) -> None:
+        findings.append(
+            Finding(
+                finding_id="",
+                pool_group=group,
+                dataset_id=None,
+                affected_datasets=ids,
+                component="metadata",
+                severity=severity,
+                reason_code=reason,
+                message=message,
+                evidence_metric=metric,
+                evidence_value=value,
+                recommended_action=action,
+            )
+        )
+
+    def distinct(values: list[str]) -> list[str]:
+        return sorted(set(values))
+
+    samples = distinct(s.sample_id for s in specs)
+    if len(samples) > 1:
+        status = CheckStatus.FAIL
+        finding(
+            "GROUP_DIFFERENT_SAMPLE_IDS",
+            f"Pooling group {group!r} declares different biological samples: "
+            f"{samples}. Pooling across biological samples is outside the supported "
+            "technical-pooling use case.",
+            Severity.INCOMPATIBLE,
+            "Split the datasets into per-sample pooling groups, or correct the "
+            "manifest sample_id values.",
+        )
+    assays = distinct(s.assay for s in specs)
+    if len(assays) > 1:
+        status = CheckStatus.FAIL
+        finding(
+            "GROUP_DIFFERENT_ASSAYS",
+            f"Pooling group {group!r} mixes assays {assays}; different assays have "
+            "different technical distributions and pooling semantics.",
+            Severity.INCOMPATIBLE,
+            "Pool only datasets sharing one assay.",
+        )
+    libraries = distinct(s.library_id for s in specs)
+    if len(libraries) > 1:
+        action = policy.distinct_library_ids
+        msg = (
+            f"Pooling group {group!r} combines different libraries: {libraries}. "
+            "Different libraries from one sample can be poolable; this is a "
+            "policy judgement, not automatic compatibility."
+        )
+        if action == "incompatible":
+            status = CheckStatus.FAIL
+            finding(
+                "GROUP_DIFFERENT_LIBRARY_IDS",
+                msg,
+                Severity.INCOMPATIBLE,
+                "Set metadata.distinct_library_ids if pooling across libraries is "
+                "intended, or split the group.",
+            )
+        elif action == "review":
+            if status == CheckStatus.PASS:
+                status = CheckStatus.REVIEW
+            finding(
+                "GROUP_DIFFERENT_LIBRARY_IDS",
+                msg,
+                Severity.WARNING,
+                "Confirm the libraries share the biological sample and intended "
+                "processing, then accept the REVIEW or adjust the policy.",
+            )
+        else:
+            finding(
+                "GROUP_DIFFERENT_LIBRARY_IDS",
+                msg,
+                Severity.INFO,
+                "No action required; policy marks distinct libraries allowed.",
+            )
+    platforms = distinct(s.platform for s in specs)
+    if len(platforms) > 1:
+        if status == CheckStatus.PASS:
+            status = CheckStatus.REVIEW
+        finding(
+            "GROUP_DIFFERENT_PLATFORMS",
+            f"Pooling group {group!r} mixes platforms {platforms}. Even when "
+            "syntactically concatenable, cross-platform data is not homogeneous.",
+            Severity.WARNING,
+            "Keep platforms in separate pooling groups unless the downstream "
+            "analysis explicitly models platform effects.",
+        )
+    processings = distinct(s.processing_id or "" for s in specs)
+    if len(processings) > 1 or "" in processings:
+        action = policy.distinct_processing_ids
+        null_processing = any(s.processing_id is None for s in specs)
+        if null_processing:
+            if status == CheckStatus.PASS:
+                status = CheckStatus.REVIEW
+            finding(
+                "METADATA_PROCESSING_UNKNOWN",
+                f"Pooling group {group!r} has datasets without processing_id; "
+                "preprocessing history cannot be compared for them.",
+                Severity.WARNING,
+                "Supply processing_id for every dataset or confirm identical preprocessing.",
+            )
+        elif len(processings) > 1:
+            if action == "incompatible":
+                status = CheckStatus.FAIL
+                finding(
+                    "GROUP_DIFFERENT_PROCESSING_IDS",
+                    f"Pooling group {group!r} mixes preprocessing settings "
+                    f"{processings}; policy marks this incompatible.",
+                    Severity.INCOMPATIBLE,
+                    "Split the group by processing_id.",
+                )
+            elif action == "review":
+                if status == CheckStatus.PASS:
+                    status = CheckStatus.REVIEW
+                finding(
+                    "GROUP_DIFFERENT_PROCESSING_IDS",
+                    f"Pooling group {group!r} mixes preprocessing settings {processings}.",
+                    Severity.WARNING,
+                    "Confirm the preprocessing differences are acceptable for the "
+                    "downstream analysis.",
+                )
+            else:
+                finding(
+                    "GROUP_DIFFERENT_PROCESSING_IDS",
+                    f"Pooling group {group!r} mixes preprocessing settings "
+                    f"{processings}; policy marks this allowed.",
+                    Severity.INFO,
+                    "No action required.",
+                )
+    reference_ids = distinct(s.reference_id or "" for s in specs if s.reference_id is not None)
+    if len(reference_ids) > 1 and policy.reference_mismatch_action == "incompatible":
+        status = CheckStatus.FAIL
+        finding(
+            "GROUP_DIFFERENT_REFERENCES",
+            f"Pooling group {group!r} declares different reference_id values "
+            f"{sorted(set(reference_ids))}.",
+            Severity.INCOMPATIBLE,
+            "Pool only datasets aligned to the same reference.",
+        )
+    return status, findings
+
+
+def _reference_dictionary_findings(
+    outcomes: list[DatasetOutcome], policy: Policy
+) -> tuple[CheckStatus, list[Finding]]:
+    """Compare BAM reference dictionaries and read groups within one group."""
+    bams = [o for o in outcomes if o.bam is not None and o.spec.input_format is InputFormat.BAM]
+    group = outcomes[0].spec.pool_group
+    ids = [o.spec.dataset_id for o in outcomes]
+    findings: list[Finding] = []
+    status = CheckStatus.PASS
+
+    def finding(
+        reason: str,
+        message: str,
+        severity: Severity,
+        action: str,
+        metric: str | None = None,
+        value: float | None = None,
+    ) -> None:
+        nonlocal status
+        findings.append(
+            Finding(
+                finding_id="",
+                pool_group=group,
+                dataset_id=None,
+                affected_datasets=ids,
+                component="metadata",
+                severity=severity,
+                reason_code=reason,
+                message=message,
+                evidence_metric=metric,
+                evidence_value=value,
+                recommended_action=action,
+            )
+        )
+
+    if bams:
+        base = bams[0].bam.header.references
+        for other in bams[1:]:
+            refs = other.bam.header.references
+            names_a = [r[0] for r in base]
+            names_b = [r[0] for r in refs]
+            if names_a != names_b or [r[1] for r in base] != [r[1] for r in refs]:
+                status = CheckStatus.FAIL
+                finding(
+                    "BAM_REFERENCE_DICTIONARY_MISMATCH",
+                    f"Reference dictionaries differ between datasets "
+                    f"{bams[0].spec.dataset_id!r} and {other.spec.dataset_id!r} "
+                    "(names, lengths, or order). Coordinate-sorted BAMs must share "
+                    "one reference dictionary to merge.",
+                    Severity.INCOMPATIBLE,
+                    "Re-align all datasets to one reference, or split the group.",
+                )
+                continue
+            md5_a = {r[0]: r[2] for r in base if r[2]}
+            md5_b = {r[0]: r[2] for r in refs if r[2]}
+            shared = set(md5_a) & set(md5_b)
+            conflicting = [n for n in sorted(shared) if md5_a[n] != md5_b[n]]
+            if conflicting:
+                status = CheckStatus.FAIL
+                finding(
+                    "BAM_REFERENCE_CHECKSUM_CONFLICT",
+                    f"Reference checksums (M5) conflict for contigs {conflicting} "
+                    "between datasets "
+                    f"{bams[0].spec.dataset_id!r} and {other.spec.dataset_id!r}.",
+                    Severity.INCOMPATIBLE,
+                    "Use identical reference FASTA files for all datasets.",
+                )
+            elif len(shared) < len(names_a):
+                if status == CheckStatus.PASS:
+                    status = CheckStatus.REVIEW
+                finding(
+                    "BAM_REFERENCE_IDENTITY_UNVERIFIED",
+                    "Reference names and lengths match but M5 checksums are absent "
+                    f"for some contigs between {bams[0].spec.dataset_id!r} and "
+                    f"{other.spec.dataset_id!r}; sequence identity is not fully "
+                    "verified (matching names and lengths do not prove identity).",
+                    Severity.WARNING,
+                    "Align from one reference FASTA or verify checksums if strict "
+                    "identity is required.",
+                )
+        # Read-group collisions: same RG id with different definitions.
+        seen: dict[str, tuple] = {}
+        for o in bams:
+            for rg in o.bam.header.read_groups:
+                rid = rg.get("ID", "")
+                sig = (rg.get("SM"), rg.get("LB"), rg.get("PL"), rg.get("PU"))
+                if rid in seen and seen[rid] != sig:
+                    status = CheckStatus.FAIL
+                    finding(
+                        "BAM_READ_GROUP_COLLISION",
+                        f"Read group ID {rid!r} is defined differently across "
+                        f"datasets in group {group!r} "
+                        f"({seen[rid]} vs {sig}).",
+                        Severity.INCOMPATIBLE,
+                        "Make read-group IDs unique per run/library or align their "
+                        "definitions before merging.",
+                    )
+                else:
+                    seen[rid] = sig
+    return status, findings
+
+
+def _identity_assessment(
+    outcomes: list[DatasetOutcome], policy: Policy
+) -> tuple[CheckStatus, IdentityEvidenceLevel, list[Finding]]:
+    group = outcomes[0].spec.pool_group
+    ids = [o.spec.dataset_id for o in outcomes]
+    samples = sorted({o.spec.sample_id for o in outcomes})
+    findings: list[Finding] = []
+
+    def finding(reason: str, message: str, severity: Severity, action: str) -> None:
+        findings.append(
+            Finding(
+                finding_id="",
+                pool_group=group,
+                dataset_id=None,
+                affected_datasets=ids,
+                component="identity",
+                severity=severity,
+                reason_code=reason,
+                message=message,
+                evidence_metric=None,
+                evidence_value=None,
+                recommended_action=action,
+            )
+        )
+
+    if len(samples) > 1:
+        return (
+            CheckStatus.FAIL,
+            IdentityEvidenceLevel.CONFLICTING,
+            findings,
+        )
+    if policy.require_independent_verification:
+        finding(
+            "IDENTITY_VERIFICATION_NOT_IMPLEMENTED",
+            "Policy requires independent sample-identity verification, but this "
+            "seqconsistency version implements no genotype-based verification "
+            "method (planned Phase 3). Identity was NOT verified.",
+            Severity.WARNING,
+            "Run an external verification tool (e.g. NGSCheckMate) or relax the "
+            "policy to accept declared identity.",
+        )
+        return (
+            CheckStatus.MISSING_EVIDENCE,
+            IdentityEvidenceLevel.DECLARED_ONLY,
+            findings,
+        )
+    if policy.accept_declared_sample_id:
+        finding(
+            "IDENTITY_DECLARED_NOT_VERIFIED",
+            IDENTITY_DECLARED_SENTENCE + f" All datasets in group {group!r} declare "
+            f"sample_id {samples[0]!r}.",
+            Severity.INFO,
+            "No action required; the declaration is trusted per policy.",
+        )
+        return CheckStatus.PASS, IdentityEvidenceLevel.DECLARED_ONLY, findings
+    finding(
+        "IDENTITY_EVIDENCE_POLICY_REFUSED",
+        "All datasets declare the same sample_id, but the policy does not accept "
+        "declared identity and no independent verification ran.",
+        Severity.WARNING,
+        "Set identity.accept_declared_sample_id true, or enable independent "
+        "verification once implemented.",
+    )
+    return CheckStatus.MISSING_EVIDENCE, IdentityEvidenceLevel.DECLARED_ONLY, findings
+
+
+def _technical_assessment(
+    comparison_rows: list[dict[str, Any]], policy: Policy, profile: str, assay: str
+) -> tuple[CheckStatus, list[Finding]]:
+    """Group-level technical status from comparison rows."""
+    findings: list[Finding] = []
+    status = CheckStatus.PASS
+
+    def finding(
+        reason: str, message: str, severity: Severity, action: str, row: dict[str, Any]
+    ) -> None:
+        findings.append(
+            Finding(
+                finding_id="",
+                pool_group=row["pool_group"],
+                dataset_id=None,
+                affected_datasets=[row["dataset_a"], row["dataset_b"]],
+                component="technical",
+                severity=severity,
+                reason_code=reason,
+                message=message,
+                evidence_metric=row["metric"],
+                evidence_value=row["value"],
+                recommended_action=action,
+            )
+        )
+
+    resolver = policy.resolver_for(profile, assay)
+    for row in comparison_rows:
+        if (
+            row["status"] == STATUS_INSUFFICIENT_OBSERVATIONS
+            or row["status"] == STATUS_MISSING_EVIDENCE
+        ):
+            status = _worse(status, CheckStatus.MISSING_EVIDENCE)
+        elif row["status"] == STATUS_EXCEED:
+            rule = resolver(row["metric"], row["stratum"])
+            action = rule.action if rule else "review"
+            severity = Severity.INCOMPATIBLE if action == "incompatible" else Severity.WARNING
+            status = _worse(
+                status, CheckStatus.FAIL if action == "incompatible" else CheckStatus.REVIEW
+            )
+            finding(
+                "TECH_THRESHOLD_EXCEEDED",
+                f"{row['metric']} distance {row['value']:.6g} between "
+                f"{row['dataset_a']!r} and {row['dataset_b']!r} exceeds the policy "
+                f"maximum {row['threshold']:.6g} ({row['method']}, stratum "
+                f"{row['stratum']}).",
+                severity,
+                "Inspect the distributions; if the shift is expected, recalibrate "
+                "the threshold with genuine between-run data; otherwise do not pool.",
+                row,
+            )
+        elif row["status"] == STATUS_NO_THRESHOLD and policy.require_thresholds:
+            status = _worse(status, CheckStatus.MISSING_EVIDENCE)
+        elif row["status"] == STATUS_NO_THRESHOLD and not policy.require_thresholds:
+            finding(
+                "TECH_NO_THRESHOLD_CONFIGURED",
+                f"No policy threshold for metric {row['metric']!r} (stratum "
+                f"{row['stratum']}); the distance {row['value']:.6g} is reported "
+                "but not assessed.",
+                Severity.INFO,
+                "Add a calibrated threshold before relying on this metric.",
+                row,
+            )
+    if (
+        any(r["status"] == STATUS_NO_THRESHOLD for r in comparison_rows)
+        and policy.require_thresholds
+        and status == CheckStatus.PASS
+    ):
+        status = CheckStatus.MISSING_EVIDENCE
+    return status, findings
+
+
+_WORSE_ORDER = [
+    CheckStatus.PASS,
+    CheckStatus.REVIEW,
+    CheckStatus.INSUFFICIENT_OBSERVATIONS,
+    CheckStatus.MISSING_EVIDENCE,
+    CheckStatus.FAIL,
+]
+
+
+def _worse(current: CheckStatus, candidate: CheckStatus) -> CheckStatus:
+    if _WORSE_ORDER.index(candidate) > _WORSE_ORDER.index(current):
+        return candidate
+    return current
+
+
+def evaluate_group(
+    outcomes: list[DatasetOutcome],
+    comparison_rows: list[dict[str, Any]],
+    policy: Policy,
+) -> tuple[GroupDecision, list[Finding]]:
+    """Evaluate one pooling group: component statuses, decision, findings."""
+    group = outcomes[0].spec.pool_group
+    profile = outcomes[0].spec.read_type.value
+    assay = outcomes[0].spec.assay
+
+    metadata_status, meta_findings = _metadata_findings(outcomes, policy)
+    ref_status, ref_findings = _reference_dictionary_findings(outcomes, policy)
+    metadata_status = _worse(metadata_status, ref_status)
+    identity_status, identity_level, identity_findings = _identity_assessment(outcomes, policy)
+    technical_status, tech_findings = _technical_assessment(comparison_rows, policy, profile, assay)
+
+    # fastp evidence requirement (merged_short).
+    if outcomes[0].spec.read_type.value == "merged_short" and policy.require_fastp_evidence:
+        missing = [o.spec.dataset_id for o in outcomes if o.fastp is None]
+        if missing:
+            technical_status = _worse(technical_status, CheckStatus.REVIEW)
+            tech_findings.append(
+                Finding(
+                    finding_id="",
+                    pool_group=group,
+                    dataset_id=None,
+                    affected_datasets=missing,
+                    component="technical",
+                    severity=Severity.WARNING,
+                    reason_code="MERGED_MISSING_FASTP_EVIDENCE",
+                    message=(
+                        "merged_short datasets without fastp evidence: "
+                        f"{missing}. Merge rates cannot be compared; merged-read "
+                        "distributions carry strong selection bias."
+                    ),
+                    evidence_metric="merge_retained_fraction",
+                    evidence_value=None,
+                    recommended_action="Supply fastp_json paths for every merged_short "
+                    "dataset, or disable require_fastp_evidence knowingly.",
+                )
+            )
+
+    # Aggregation precedence (spec §9): hard fail > missing evidence > review > pass.
+    components = [technical_status, metadata_status, identity_status]
+    if CheckStatus.FAIL in components:
+        overall = DecisionState.INCOMPATIBLE
+    elif (
+        CheckStatus.MISSING_EVIDENCE in components
+        or CheckStatus.INSUFFICIENT_OBSERVATIONS in components
+    ):
+        overall = DecisionState.INSUFFICIENT_EVIDENCE
+    elif CheckStatus.REVIEW in components:
+        overall = DecisionState.REVIEW
+    else:
+        overall = DecisionState.COMPATIBLE
+
+    all_findings = meta_findings + ref_findings + identity_findings + tech_findings
+    assumptions: list[str] = []
+    if identity_level is IdentityEvidenceLevel.DECLARED_ONLY:
+        assumptions.append("identity_declared_not_verified")
+    if any(not t.calibrated for t in policy.thresholds):
+        assumptions.append("thresholds_illustrative_uncalibrated")
+    assumptions.append("technical_pooling_not_statistical_merge_of_biological_replicates")
+
+    reason_codes: list[str] = []
+    for f in all_findings:
+        if f.reason_code not in reason_codes:
+            reason_codes.append(f.reason_code)
+
+    decision = GroupDecision(
+        pool_group=group,
+        structural_status=CheckStatus.PASS,
+        technical_status=technical_status,
+        metadata_status=metadata_status,
+        identity_status=identity_status,
+        overall_decision=overall,
+        identity_evidence_level=identity_level,
+        assumptions=assumptions,
+        reason_codes=reason_codes,
+    )
+    return decision, all_findings
+
+
+def assign_finding_ids(findings: list[Finding]) -> list[Finding]:
+    """Deterministic finding ids: groups sorted, then component, reason, datasets."""
+    findings_sorted = sorted(
+        findings,
+        key=lambda f: (
+            f.pool_group,
+            f.component,
+            f.reason_code,
+            tuple(f.affected_datasets),
+            f.message,
+        ),
+    )
+    for i, f in enumerate(findings_sorted, start=1):
+        f.finding_id = f"F{i:04d}"
+    return findings_sorted

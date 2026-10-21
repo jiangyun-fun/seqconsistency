@@ -1,0 +1,2 @@
+[console_scripts]
+seqconsistency = seqconsistency.cli:main

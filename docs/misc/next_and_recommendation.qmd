@@ -1,0 +1,16 @@
+---
+title: "next and recommendation — seqconsistency"
+author: "Yun Jiang"
+---
+
+## next
+
+1. H: Scaffold package (pyproject, pixi deps, src layout) and commit.
+2. H: Implement core scanning modules (fastq, bam, sampling) with tests.
+3. H: Implement comparisons, policy engine, parquet outputs, CLI with tests.
+4. M: Run benchmarks and record measured results.
+5. M: Write README and examples; final verification.
+
+## recommendation
+
+1. M: Defer sourmash/coverage/genotype modules to Phase 2/3 as specified.

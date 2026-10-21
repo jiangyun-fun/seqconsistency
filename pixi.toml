@@ -1,0 +1,28 @@
+[workspace]
+authors = ["Yun Jiang <jiangyunacw@gmail.com>"]
+channels = ["conda-forge", "bioconda", "file:///bioproj/tools/share/conda-jy-essentials", "s3://conda/sibio"]
+name = "seqconsistency"
+platforms = ["linux-64"]
+version = "0.1.0"
+
+[tasks]
+test = "pytest"
+test-fast = "pytest -m 'not slow'"
+lint = "ruff check src tests benchmarks"
+format = "ruff format src tests benchmarks"
+typecheck = "mypy"
+smoke = "seqconsistency --version"
+
+[dependencies]
+python = "3.12.*"
+numpy = ">=2.5.4,<3"
+scipy = ">=1.18.1,<2"
+pyarrow = ">=25.0.0,<26"
+pysam = ">=0.24.1,<0.25"
+pyyaml = ">=6.0.3,<7"
+pytest = ">=9.1.1,<10"
+ruff = ">=0.17.1,<0.18"
+mypy = ">=2.4.0,<3"
+
+[pypi-dependencies]
+seqconsistency = { path = ".", editable = true }

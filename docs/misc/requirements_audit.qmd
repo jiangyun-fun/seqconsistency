@@ -1,0 +1,29 @@
+---
+title: "seqconsistency — requirements audit"
+author: "Yun Jiang"
+---
+
+## Implement seqconsistency Phase-1 MVP package
+
+```
+level: high
+date: 2026-10-21
+```
+
+### description
+
+Implement a complete, pip-installable Python package `seqconsistency` that assesses
+whether multiple sequencing datasets (FASTQ SE/PE, coordinate-sorted BAM; profiles
+paired_short / merged_short / ont / hifi) are structurally valid, technically consistent,
+and poolable under an explicit policy, with deterministic bounded-memory sampling,
+Wasserstein + Jensen–Shannon pairwise comparisons, five explicit-path Parquet outputs,
+provenance JSON, optional HTML report, comprehensive tests, benchmarks with measured
+results, and full documentation.
+
+### result
+
+1. Implemented (in progress — see docs/plans/20261021-120743_seqconsistency-mvp.report.qmd)
+
+### change
+
+See the report's `change` category.

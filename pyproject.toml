@@ -1,0 +1,71 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "seqconsistency"
+version = "0.1.0"
+description = "Structural, technical, and pooling-consistency assessment for sequencing datasets (FASTQ/BAM)"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Yun Jiang", email = "jiangyunacw@gmail.com" }]
+keywords = ["bioinformatics", "sequencing", "qc", "fastq", "bam", "pooling"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+    "Intended Audience :: Science/Research",
+    "Operating System :: POSIX :: Linux",
+]
+dependencies = [
+    "numpy>=1.26",
+    "scipy>=1.11",
+    "pyarrow>=15",
+    "pysam>=0.22",
+    "PyYAML>=6.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "ruff>=0.6", "mypy>=1.10"]
+
+[project.scripts]
+seqconsistency = "seqconsistency.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/jiangyunacw/seqconsistency"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+seqconsistency = ["py.typed"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "NPY"]
+ignore = ["SIM108", "SIM105"]
+
+[tool.mypy]
+python_version = "3.11"
+mypy_path = "src"
+packages = ["seqconsistency"]
+warn_unused_ignores = true
+warn_redundant_casts = true
+disallow_untyped_defs = true
+# pysam ships no inline types and has no stubs package as of 2026-10.
+[[tool.mypy.overrides]]
+module = "pysam.*"
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+markers = [
+    "slow: benchmarks-scale tests, deselect with '-m \"not slow\"'",
+]
