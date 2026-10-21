@@ -252,9 +252,12 @@ def _compare_one(
 ) -> dict[str, Any]:
     component = "fastq" if a.spec.input_format is InputFormat.FASTQ else "alignment"
 
+    # At least one observation per side is always required: distances on empty
+    # samples are undefined, so min_observations=0 still means >= 1.
+    effective_min = max(min_observations, 1)
     if definition.method == METHOD_WASSERSTEIN:
         va, vb, na, nb = _wasserstein_inputs(a, b, definition.metric, stratum)
-        if na < min_observations or nb < min_observations:
+        if na < effective_min or nb < effective_min:
             return _comparison_row(
                 pool_group,
                 a.spec.dataset_id,
@@ -275,7 +278,7 @@ def _compare_one(
         value = wasserstein_distance(va, vb, definition.metric)
     elif definition.method == METHOD_JSD:
         ha, hb, na, nb = _jsd_inputs(a, b, definition.metric, stratum)
-        if na < min_observations or nb < min_observations:
+        if na < effective_min or nb < effective_min:
             return _comparison_row(
                 pool_group,
                 a.spec.dataset_id,

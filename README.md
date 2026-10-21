@@ -159,6 +159,8 @@ biological validation from synthetic software tests.
 
 ## FASTQ validation behavior
 
+- Gzip compression is detected by the `.gz` filename suffix (there is no content
+  sniffing).
 - **Strict four-line records** (`@header`, sequence, `+`, qualities). Wrapped /
   multi-line FASTQ records are **rejected** with a clear error — a documented v1
   restriction (chosen over partial multiline support).
@@ -435,6 +437,12 @@ removed and anything already published by this run is removed best-effort.
   [benchmarks/results-2026-10-21.md](benchmarks/results-2026-10-21.md) (real
   measurements recorded by `benchmarks/bench.py`; regenerate with
   `pixi run -- python benchmarks/bench.py run --data-dir <dir> --results-out <json>`).
+  Headline (x86_64 Linux, Python 3.12, single scan process): SE FASTQ 120k reads/s
+  (12 M bases/s; gzip ≈ same), PE FASTQ 56.6k pairs/s including per-pair name
+  synchronization, long-read FASTQ 23 M bases/s at ≈0.5 GiB peak RSS, BAM 368
+  records/s (pysam per-record object creation dominates — the documented
+  bottleneck), peak RSS flat (+0.0 MiB) when reads grow 4× at fixed
+  `--sample-size`.
 
 ## Python API
 

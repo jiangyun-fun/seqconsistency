@@ -1,0 +1,150 @@
+{
+  "seqconsistency_version": "0.1.0",
+  "python": "3.12.15",
+  "machine": "x86_64",
+  "host": "jiangy-Precision-5820-Tower",
+  "timestamp": "2026-10-21T14:47:29+0800",
+  "settings": {
+    "reads": 2000000,
+    "long_reads": 400000,
+    "bam_reads": 500000,
+    "sample_size": 100000,
+    "workers_list": "1,2,4"
+  },
+  "results": [
+    {
+      "path": "/tmp/seqc-bench/se.fastq",
+      "kind": "fastq_se",
+      "reads": 2000000,
+      "bases": 200000000,
+      "wall_s": 16.67,
+      "reads_per_s": 119977,
+      "bases_per_s": 11997715,
+      "peak_rss_mib": 211.0,
+      "file_bytes": 436888890
+    },
+    {
+      "path": "/tmp/seqc-bench/se.fastq.gz",
+      "kind": "fastq_se",
+      "reads": 2000000,
+      "bases": 200000000,
+      "wall_s": 17.011,
+      "reads_per_s": 117574,
+      "bases_per_s": 11757434,
+      "peak_rss_mib": 211.0,
+      "file_bytes": 72072652
+    },
+    {
+      "kind": "fastq_pe",
+      "reads": 2000000,
+      "bases": 400000000,
+      "wall_s": 35.309,
+      "reads_per_s": 56643,
+      "bases_per_s": 11328589,
+      "peak_rss_mib": 246.6
+    },
+    {
+      "path": "/tmp/seqc-bench/ont.fastq",
+      "kind": "fastq_se",
+      "reads": 400000,
+      "bases": 4483137783,
+      "wall_s": 195.018,
+      "reads_per_s": 2051,
+      "bases_per_s": 22988298,
+      "peak_rss_mib": 544.3,
+      "file_bytes": 8973364456
+    },
+    {
+      "kind": "bam",
+      "reads": 500000,
+      "bases": 50000000,
+      "wall_s": 1360.541,
+      "reads_per_s": 368,
+      "bases_per_s": 36750,
+      "peak_rss_mib": 544.3
+    },
+    {
+      "kind": "worker_scaling",
+      "workers": 1,
+      "datasets": 4,
+      "reads": 200000,
+      "wall_s": 5.337,
+      "child_peak_rss_mib": 544.3
+    },
+    {
+      "kind": "worker_scaling",
+      "workers": 2,
+      "datasets": 4,
+      "reads": 200000,
+      "wall_s": 3.724,
+      "child_peak_rss_mib": 544.3
+    },
+    {
+      "kind": "worker_scaling",
+      "workers": 4,
+      "datasets": 4,
+      "reads": 200000,
+      "wall_s": 3.017,
+      "child_peak_rss_mib": 544.3
+    },
+    {
+      "kind": "pair_scaling",
+      "datasets": 5,
+      "pairs": 10,
+      "rows": 40,
+      "wall_s": 1.3652
+    },
+    {
+      "kind": "pair_scaling",
+      "datasets": 10,
+      "pairs": 45,
+      "rows": 180,
+      "wall_s": 6.678
+    },
+    {
+      "kind": "pair_scaling",
+      "datasets": 20,
+      "pairs": 190,
+      "rows": 760,
+      "wall_s": 26.08
+    },
+    {
+      "kind": "pair_scaling",
+      "datasets": 40,
+      "pairs": 780,
+      "rows": 3120,
+      "wall_s": 110.6341
+    },
+    {
+      "kind": "parquet_write",
+      "rows": 2000000,
+      "wall_s": 8.448,
+      "rows_per_s": 236736,
+      "output_mb": 11.62
+    },
+    {
+      "path": "/tmp/seqc-bench/mem_150000.fastq",
+      "kind": "memory_vs_reads",
+      "reads": 150000,
+      "bases": 1130359942,
+      "wall_s": 45.751,
+      "reads_per_s": 3279,
+      "bases_per_s": 24707041,
+      "peak_rss_mib": 907.2,
+      "file_bytes": 2263308774,
+      "sample_size": 100000
+    },
+    {
+      "path": "/tmp/seqc-bench/mem_600000.fastq",
+      "kind": "memory_vs_reads",
+      "reads": 600000,
+      "bases": 4509544943,
+      "wall_s": 187.663,
+      "reads_per_s": 3197,
+      "bases_per_s": 24030010,
+      "peak_rss_mib": 907.2,
+      "file_bytes": 9029778776,
+      "sample_size": 100000
+    }
+  ]
+}

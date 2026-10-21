@@ -1,0 +1,739 @@
+---
+title: "seqconsistency MVP — implementation report"
+author: "Yun Jiang"
+date: today
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    toc-expand: true
+    html-math-method: mathjax
+    grid:
+      margin-width: 400px
+include-in-header:
+  text: |
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🧬</text></svg>">
+---
+
+<!-- Plan: docs/plans/20261021-120743_seqconsistency-mvp.plan.qmd (rewritten in place to match delivered work) -->
+
+## feature
+
+### Full Phase-1 seqconsistency package
+
+```
+level: high
+```
+
+#### reason
+
+The package installs, the CLI runs end to end on all eight example scenarios with the intended decisions, and 165 tests pass. Direct evidence for every claim sits in this report.
+
+#### description
+
+```
+type: [text]
+```
+
+1. Installable package `seqconsistency` 0.1.0: src layout, typed, CLI entry point, pixi workspace.
+2. FASTQ engine: one streaming pass per file. It combines strict four-line structural validation, full-file counters, full-file histograms, per-cycle profiles for short reads, and reservoir sampling. All per-base work is vectorized with numpy. There are no per-base Python loops.
+3. BAM engine via pysam: declared and observed coordinate-order enforcement, flag-category counters, one-observation-per-pair insert sizes, sampled GC and quality features, reference-dictionary and read-group checks.
+4. Deterministic key-based reservoir sampling with blake2b per-dataset seeds. Paired-end mates share one key per pair. Results are identical across worker counts.
+5. Comparisons: Wasserstein-1 on samples, base-2 Jensen–Shannon distance on histograms, policy thresholds, min-observation floors, and a `--max-pairs` guard before expensive work.
+6. Decision engine: four component statuses plus overall decision with fixed precedence, stable reason codes, and declared-not-verified identity semantics.
+7. Outputs: five explicit-path Parquet tables with versioned schemas, staged atomic publication with best-effort rollback, provenance JSON, and an optional self-contained HTML report.
+
+#### before
+
+No tool existed in this repository to assess whether sequencing datasets were structurally valid and poolable. Pooling decisions had no recorded evidence trail and no policy engine.
+
+#### after
+
+One `seqconsistency check` invocation validates the inputs fully, compares every dataset pair in every pooling group, and writes the five Parquet tables plus provenance with a deterministic, traceable decision per group.
+
+#### evidence
+
+```
+level: high
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+- Modules: `src/seqconsistency/` (17 files); packaging: `pyproject.toml`, `pixi.toml`.
+- Final suite: `pixi run test` → exit 0, 165 passed (`/tmp/final_suite.log` records `EXITCODE:0`).
+- `pixi run typecheck` (mypy) clean. `pixi run lint` (ruff) clean.
+- Example decisions verified: `examples/run_examples.sh` output shows COMPATIBLE, REVIEW, INCOMPATIBLE, INSUFFICIENT_EVIDENCE, and multi-group outcomes with exit codes 0 and 1.
+
+:::
+
+### Complete test suite covering every spec test class
+
+```
+level: high
+```
+
+#### reason
+
+Every test class listed in the task specification §12 has at least one test, all pass, and the statistical tests compare against hand-computed examples rather than self-consistency.
+
+#### description
+
+```
+type: [text]
+```
+
+1. Nine test files, 165 tests: FASTQ structural defects, gzip corruption, PE synchronization, BAM ordering and categories, insert-size double-count prevention, missing qualities, statistical distances against hand-computed values, degenerate and zero-bin distributions, seed and worker-count reproducibility, policy precedence and exit codes, Parquet schemas and read-back, staged-output rollback, and bounded memory.
+
+#### before
+
+No tests existed. Correctness claims rested on code reading alone.
+
+#### after
+
+The suite runs in roughly two minutes, fails loudly on every injected defect class, and measures memory in isolated child processes so the fixture-laden parent cannot distort the numbers.
+
+#### evidence
+
+```
+level: high
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+- `pixi run pytest tests/ -q` → `165 passed`, exit 0, 2026-10-21.
+- Hand-computed checks: `tests/test_statistics.py::test_wasserstein_hand_computed_shift`, `test_jsd_hand_computed_small_case`.
+- Memory: `tests/test_memory.py` (VmHWM of isolated children).
+
+:::
+
+### Reproducible benchmark harness with measured results
+
+```
+level: high
+```
+
+#### reason
+
+The harness ran to completion on an uncontended machine and produced the committed numbers; the harness itself is committed and rerunnable.
+
+#### description
+
+```
+type: [table, text]
+```
+
+1. `benchmarks/bench.py` measures scan throughput, gzip cost, PE synchronization overhead, long-read behavior, BAM throughput, worker scaling, pair scaling, Parquet writing, and peak RSS against read count at fixed sample size. Generation is idempotent so reruns reuse the expensive synthetic inputs.
+2. Measured (x86_64 Linux, Python 3.12.15):
+
+| Workload | Reads | Result |
+|---|---:|---|
+| SE FASTQ, 100 bp | 2,000,000 | 119,977 reads/s, 12.0 M bases/s |
+| SE FASTQ, gzip | 2,000,000 | 117,574 reads/s |
+| PE FASTQ with sync | 2,000,000 pairs | 56,643 pairs/s |
+| Long reads, mean ~11 kb | 400,000 (4.48 Gb) | 23.0 M bases/s, 544 MiB peak |
+| BAM via pysam | 500,000 | 368 records/s |
+| Workers 1 → 2 → 4 (4 datasets) | CLI runs | 5.34 → 3.72 → 3.02 s |
+| Reads 150k → 600k, sample fixed | memory check | peak RSS +0.0 MiB |
+
+#### before
+
+No performance numbers existed, so design claims about vectorization and bounded memory were unverified assertions.
+
+#### after
+
+Every performance and memory claim in the README cites a committed measurement. The bottlenecks (per-record Python bookkeeping, PE name comparison, pysam object creation) are identified before any native optimization.
+
+#### evidence
+
+```
+level: high
+type: [table, statistic]
+```
+
+::: {.callout-note collapse="true"}
+
+- Raw measurements: `benchmarks/results-2026-10-21.json` (host `jiangy-Precision-5820-Tower`, recorded 2026-10-21T14:47:29+0800).
+- Rendered: `benchmarks/results-2026-10-21.md`.
+
+:::
+
+## fix
+
+### Reservoir under-filled before reaching capacity
+
+```
+level: high
+```
+
+#### reason
+
+A dedicated regression test proves the fixed behavior, and the same class of bug was fixed in both code paths (block-wise FASTQ and per-record BAM).
+
+#### description
+
+```
+type: [text]
+```
+
+1. The reservoir rejected observations whose key exceeded the current maximum while it was still below capacity. It therefore retained a decreasing chain of keys instead of the k smallest.
+2. The gate now admits every key until the reservoir is full, then admits only keys below the running k-th smallest. A BAM integration test asserts `sampled_count` reaches the configured capacity.
+
+#### before
+
+Datasets with fewer observations than expected entered the comparisons, and BAM samples covered roughly a fifth of the requested size in the failing case.
+
+#### after
+
+The sample contains exactly `min(sample_size, eligible)` observations in every path, and paired-end R1 and R2 rows still come from identical pairs.
+
+#### evidence
+
+```
+level: high
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+- Fix: `src/seqconsistency/sampling.py` (`add_block`, `is_full`), `src/seqconsistency/bam.py` gate.
+- Regression: `tests/test_bam.py::test_valid_coordinate_sorted_bam` asserts `sampled_count == 100`.
+
+:::
+
+### Nine further defects surfaced by the test suite
+
+```
+level: high
+```
+
+#### reason
+
+Each defect has a test or example rerun that failed before the fix and passes after. None remains open.
+
+#### description
+
+```
+type: [text]
+```
+
+1. Raw `zlib.error` escaped the gzip reader; it is now wrapped as an input error.
+2. `first_in_pair_primary` was never counted, and two BAM metric rows divided by the flags object instead of the scan result.
+3. scipy exposes the Wasserstein function as `wasserstein_distance` in all supported versions; the nonexistent `wasserstein1d` name was removed.
+4. Output-path validation now checks input collisions before suggesting `--overwrite`, so an input path is never presented as replaceable.
+5. `require_fastp_evidence` was loaded but absent from the policy's allowed keys, so strict validation rejected policies that used it.
+6. Missing-threshold rows produced no finding when `require_thresholds` was true, hiding why a group fell to INSUFFICIENT_EVIDENCE.
+7. Empty-sample distance calls with `min_observations=0` raised instead of yielding an INSUFFICIENT_OBSERVATIONS row; the floor is now one observation.
+8. The benchmark harness TSV manifest omitted nullable schema columns.
+9. Long-read batch byte budget lowered from 16 MiB to 8 MiB, halving transient peaks with no throughput loss.
+
+#### before
+
+Each defect produced a wrong count, a crash, a misleading error, or an unexplained decision state.
+
+#### after
+
+Errors carry context, counts are exact, and every blocking state names its reason code with a finding.
+
+#### evidence
+
+```
+level: high
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+- `tests/test_fastq.py::test_corrupt_gzip_rejected`, `tests/test_bam.py::test_insert_size_one_observation_per_pair`, `tests/test_outputs_errors.py::test_output_colliding_with_input_rejected`, `tests/test_policy.py::test_no_threshold_blocks_compatible_when_required`, `tests/test_comparison.py` empty-sample rows.
+- Full list also recorded in the rewritten plan file under "Defects found and fixed during testing".
+
+:::
+
+## limitation
+
+### v1 scope boundaries
+
+```
+level: high
+```
+
+#### reason
+
+Each boundary is enforced by code (rejection paths) or by explicit absence in the codebase, so the confidence that the boundary is real is high.
+
+#### description
+
+```
+type: [text]
+```
+
+1. No independent genotype-based identity verification exists. Identity is always reported as declared, not verified.
+2. No sourmash sequence-content comparison and no reference-aware coverage comparison. Both are documented as unimplemented, never simulated.
+3. FASTQ is strict four-line, Phred+33 only, alphabet A/C/G/T/N. Per-cycle metrics stop at 512 (paired_short) and 1024 (merged_short) cycles. Pooling groups must be format- and profile-homogeneous, and the error message labels this a v1 restriction.
+4. BAM throughput is pysam-bound at 368 records/s measured. It is documented as the known bottleneck, not optimized prematurely.
+5. Linux only. Publication across multiple output paths is not transactional. The rollback is best effort and documented.
+
+#### evidence
+
+```
+level: high
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+- README sections "Limitations" and "Implemented / not implemented".
+- `benchmarks/results-2026-10-21.md` bottleneck list.
+
+:::
+
+## caveat
+
+### Shipped thresholds are illustrative and uncalibrated
+
+```
+level: high
+```
+
+#### reason
+
+The thresholds were invented as round-number placeholders by this session. No calibration data has ever touched them, so the risk that they misclassify real runs is real and high.
+
+#### description
+
+```
+type: [text]
+```
+
+1. `policies/example-illustrative.yaml` carries `calibrated: false` on every threshold, and decisions that use uncalibrated thresholds attach the `thresholds_illustrative_uncalibrated` assumption.
+2. Calibration requires genuine between-run data and known incompatibilities. Random splits of one FASTQ estimate sampling variation only and must not be presented as calibration.
+3. Similar distributions never establish biological sample identity. Every report states this.
+
+#### evidence
+
+```
+level: high
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+- `policies/example-illustrative.yaml` header comment.
+- README "Threshold calibration" workflow.
+- Example decisions carry the assumption string (verified in `/tmp/seqc-example-out4/*/decisions.parquet`).
+
+:::
+
+### require_thresholds: false changes the decision semantics
+
+```
+level: medium
+```
+
+#### reason
+
+The alternative semantics are implemented and tested, but their fitness for a given analysis is a user judgement this tool cannot verify.
+
+#### description
+
+```
+type: [text]
+```
+
+1. With `require_thresholds: false`, metrics without thresholds no longer block COMPATIBLE. The run records an info finding naming each unthresholded metric instead.
+2. This is an explicit opt-out mirroring the rule that optional unrequested checks must not block. The default stays strict.
+3. Pairwise compatibility is never treated as transitive, in any configuration.
+
+#### evidence
+
+```
+level: high
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+- `tests/test_policy.py::test_no_threshold_allowed_when_not_required`.
+- `tests/test_comparison.py::test_nontransitive_pairwise_compatibility`.
+
+:::
+
+## assumption
+
+### Declared identity is accepted for technical pooling only
+
+```
+level: medium
+```
+
+#### reason
+
+The assumption is implemented exactly as specified and tested, but whether declared sample IDs deserve trust is a property of the user's metadata, which this tool cannot check.
+
+#### description
+
+```
+type: [text]
+```
+
+1. Identical declared `sample_id` plus `identity.accept_declared_sample_id: true` is accepted as identity evidence for a technical pooling decision.
+2. The report then states verbatim: "Sample identity accepted from supplied metadata; not independently verified."
+3. Biological identity is never claimed proven, and conflicting declarations are hard incompatibilities.
+
+#### evidence
+
+```
+level: high
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+- `tests/test_policy.py::test_all_pass_is_compatible` (sentence asserted).
+- `tests/test_policy.py::test_different_sample_ids_are_incompatible`.
+- Example decision `identity_evidence_level=declared_not_verified` in every run.
+
+:::
+
+## conclusion
+
+### Phase 1 is delivered, verified, and measured
+
+```
+level: high
+```
+
+#### reason
+
+Every acceptance criterion in the task specification was executed this session with recorded evidence, not merely asserted.
+
+#### description
+
+```
+type: [text]
+```
+
+1. The package installs and the CLI works end to end on FASTQ (SE, PE, gzip), BAM, short and long reads, and multiple pooling groups per invocation.
+2. Structural validation covers whole files, PE synchronization is enforced per pair, and malformed inputs abort with record-level context and exit code 2.
+3. Missing evidence never passes silently. Decisions are deterministic, traceable to findings, and identical across worker counts.
+4. Memory is bounded: peak RSS is flat when reads grow fourfold at fixed sample size.
+5. Benchmarks are reproducible from the committed harness, and the unimplemented Phase 2 and 3 features are named as unimplemented.
+
+#### evidence
+
+```
+level: high
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+- Acceptance checklist: rewritten plan §"Verification (final acceptance numbers)".
+- `pixi run test` exit 0, 165 passed. `pixi run typecheck` and `pixi run lint` clean.
+- Measured results: `benchmarks/results-2026-10-21.{json,md}`.
+
+:::
+
+## recommendation
+
+### M: calibrate thresholds with genuine between-run data before production use
+
+```
+level: high
+```
+
+#### reason
+
+Until calibration happens, every COMPATIBLE outcome rests on invented thresholds and should be read as a mechanics demonstration, not a pooling approval.
+
+#### description
+
+```
+type: [text]
+```
+
+1. Collect compatible runs and known incompatibilities for your platform and assay.
+2. Read the distances from the comparisons table and pick thresholds that separate the two sets.
+3. Mark them `calibrated: true` only after that.
+
+#### evidence
+
+```
+level: high
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+README "Threshold calibration" states the same workflow and the random-split warning.
+
+:::
+
+### L: profile pysam BAM iteration before any native reader work
+
+```
+level: medium
+```
+
+#### reason
+
+The measurement identifies pysam object creation as the bottleneck, but a rewrite is justified only if profiling shows the current rate actually blocks a real workload.
+
+#### description
+
+```
+type: [text]
+```
+
+1. Re-run `benchmarks/bench.py` on your real BAM sizes.
+2. Optimize only if scan time is material against the pool of datasets you assess.
+
+#### evidence
+
+```
+level: medium
+type: [statistic]
+```
+
+::: {.callout-note collapse="true"}
+
+BAM: 368 records/s, 500,000 records, 1360.5 s wall (`benchmarks/results-2026-10-21.json`).
+
+:::
+
+## next
+
+### M: implement Phase 2 sourmash sequence-content comparison
+
+```
+level: medium
+```
+
+#### reason
+
+The extension boundary is deliberately simple and the spec defines the integration requirements. The action will happen when Phase 2 starts.
+
+#### description
+
+```
+type: [text]
+```
+
+1. Use the documented sourmash API or CLI. Record versions and sketch parameters. Keep the evidence separate from QC metrics.
+
+#### evidence
+
+```
+level: unknown
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+None
+
+:::
+
+### M: implement reference-aware coverage comparison
+
+```
+level: medium
+```
+
+#### reason
+
+The spec's assay-aware binning requirements are recorded in the README limitation text, so the action is specified even though it is not started.
+
+#### description
+
+```
+type: [text]
+```
+
+1. Compatible references, explicit regions or bins, documented filters, consistent normalization, and zero-versus-missing semantics.
+
+#### evidence
+
+```
+level: unknown
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+None
+
+:::
+
+### L: recalibrate example thresholds with real data
+
+```
+level: medium
+```
+
+#### reason
+
+Calibration depends on data this repository does not hold, so the action is chosen but externally gated.
+
+#### description
+
+```
+type: [text]
+```
+
+1. Replace every illustrative threshold per the README workflow and flip `calibrated:` to `true`.
+
+#### evidence
+
+```
+level: unknown
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+None
+
+:::
+
+## observation
+
+### Peak RSS is flat while reads grow fourfold
+
+```
+level: high
+```
+
+#### reason
+
+The measurement is a direct instrument reading, repeated at two scales with everything else fixed, and it matches the isolated-process tests.
+
+#### description
+
+```
+type: [statistic]
+```
+
+1. At fixed sample size 100,000, long-read inputs of 150,000 and 600,000 reads (1.13 Gb and 4.51 Gb) both peaked at 907.2 MiB in the benchmark process.
+2. The benchmark process number is a high-water mark that includes earlier stages. Isolated child processes in the tests peak near 0.5 GiB for comparable long-read inputs.
+3. During the 9 GB ONT scan, live RSS sampled at roughly 115 MiB, so the high-water comes from constant per-batch transients, not from accumulation.
+
+#### evidence
+
+```
+level: high
+type: [statistic]
+```
+
+::: {.callout-note collapse="true"}
+
+- `benchmarks/results-2026-10-21.md` "Memory vs read count at fixed sample size".
+- `tests/test_memory.py` (isolated VmHWM children).
+
+:::
+
+## process
+
+### discarded a benchmark run that overlapped the test suite
+
+```
+status: right
+```
+
+#### description
+
+```
+type: [text]
+```
+
+1. The first full benchmark started while the test suite was still running, so its throughput numbers would have been contended.
+2. The run was killed and repeated only after the suite finished, on an otherwise idle machine.
+3. That decision is why the committed numbers are trustworthy.
+
+#### evidence
+
+```
+level: high
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+Session log: benchmark process killed (`pkill benchmarks/bench[.]py`), rerun under monitor, `BENCH_EXIT:0`, 15 entries.
+
+:::
+
+### benchmark harness manifest omitted nullable columns
+
+```
+status: wrong
+```
+
+#### description
+
+```
+type: [text]
+```
+
+1. The worker-scaling benchmark wrote a TSV manifest from the row dict keys only, so the three nullable schema columns were absent, and the run aborted after 20 minutes of data generation.
+2. The failure was mine: I wrote the harness against the manifest schema from memory instead of reusing the test helper that already built valid manifests.
+3. The better action was applied: the harness now writes all 13 columns, and generation is idempotent, so the rerun reused the generated data and finished in minutes.
+
+#### evidence
+
+```
+level: high
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+- Failed run log: `seqconsistency: error: manifest is missing required column(s): ['reference_id', 'fastp_json']`, `BENCH_EXIT:1`.
+- Fix: `benchmarks/bench.py` `bench_worker_scaling` and `gen_fastq`/`gen_bam` reuse.
+
+:::
+
+## change
+
+### Repository mutations for the seqconsistency MVP
+
+```
+level: high
+```
+
+#### reason
+
+These are recorded facts from git status and the pixi manifest, verified at commit time.
+
+#### description
+
+```
+type: [table, text]
+```
+
+| Verb | Paths |
+|---|---|
+| Created | `src/seqconsistency/**` (17 files), `tests/**` (9 files), `benchmarks/bench.py`, `benchmarks/render_results.py`, `benchmarks/results-2026-10-21.{json,md}`, `examples/make_examples.py`, `examples/run_examples.sh`, `policies/example-illustrative.yaml`, `README.md`, `pyproject.toml`, `docs/plans/**`, `docs/misc/**` |
+| Updated | `pixi.toml`, `pixi.lock` |
+
+1. Packages (pixi default env): numpy, scipy, pyarrow, pysam, pyyaml (runtime). pytest, ruff, mypy, duckdb, pandas (dev and read-back tests). types-pyyaml, scipy-stubs (type stubs). seqconsistency itself is an editable pypi self-install.
+2. Git: branch `main`. Commits: `feat: implement seqconsistency core…`, `feat: complete test suite, benchmarks harness, examples, docs`, `docs: sync rolling next/recommendation; fix bam example metadata`, plus the final benchmark/docs commit. No branches created or switched.
+3. No new environments beyond the project pixi default environment.
+
+#### evidence
+
+```
+level: high
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+`git log --oneline` and `git status` at commit time; `pixi.toml` dependency table.
+
+:::
+
+## other
+
+None

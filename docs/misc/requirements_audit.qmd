@@ -14,16 +14,29 @@ date: 2026-10-21
 
 Implement a complete, pip-installable Python package `seqconsistency` that assesses
 whether multiple sequencing datasets (FASTQ SE/PE, coordinate-sorted BAM; profiles
-paired_short / merged_short / ont / hifi) are structurally valid, technically consistent,
-and poolable under an explicit policy, with deterministic bounded-memory sampling,
-Wasserstein + Jensen–Shannon pairwise comparisons, five explicit-path Parquet outputs,
-provenance JSON, optional HTML report, comprehensive tests, benchmarks with measured
-results, and full documentation.
+paired_short / merged_short / ont / hifi) are structurally valid, technically
+consistent, and poolable under an explicit policy, with deterministic bounded-memory
+sampling, Wasserstein + Jensen–Shannon pairwise comparisons, five explicit-path
+Parquet outputs, provenance JSON, optional HTML report, comprehensive tests,
+benchmarks with measured results, and full documentation.
 
 ### result
 
-1. Implemented (in progress — see docs/plans/20261021-120743_seqconsistency-mvp.report.qmd)
+1. Implemented the full Phase-1 package: FASTQ/BAM streaming engines, strict manifest and policy validation, deterministic reservoir sampling.
+2. Implemented Wasserstein-1 and base-2 Jensen–Shannon comparisons, decision engine with stable reason codes, five versioned Parquet tables, provenance JSON, HTML report, CLI with explicit output paths.
+3. Implemented scientific semantics: declared-vs-verified identity distinction, missing evidence never passes, thresholds shipped illustrative/uncalibrated, nontransitive pairwise handling.
+4. Verified with 165 passing tests (structural, statistical, reproducibility across worker counts, policy, outputs, error paths, bounded memory); mypy strict and ruff clean.
+5. Verified eight end-to-end examples producing intended decisions with correct exit codes.
+6. Benchmarked with measured committed results (throughput, worker scaling, pair scaling, flat peak RSS at 4× reads) and documented bottlenecks before any native optimization.
 
 ### change
 
-See the report's `change` category.
+Files: created `src/seqconsistency/**` (17 files), `tests/**` (9 files),
+`benchmarks/bench.py`, `benchmarks/render_results.py`,
+`benchmarks/results-2026-10-21.{json,md}`, `examples/{make_examples.py,run_examples.sh}`,
+`policies/example-illustrative.yaml`, `README.md`, `pyproject.toml`,
+`docs/plans/**`, `docs/misc/**`; updated `pixi.toml`, `pixi.lock`, `.gitignore`.
+Packages (pixi default env): numpy, scipy, pyarrow, pysam, pyyaml; dev: pytest,
+ruff, mypy, duckdb, pandas, types-pyyaml, scipy-stubs; editable self-install of
+seqconsistency. Environments: none beyond the project pixi default environment.
+Git: branch `main`, conventional commits for core, tests/docs, and final results.

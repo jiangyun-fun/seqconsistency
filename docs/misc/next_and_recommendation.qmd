@@ -5,13 +5,16 @@ author: "Yun Jiang"
 
 ## next
 
-1. H: Run the clean full benchmark and record measured results in benchmarks/.
-2. M: Final verification pass (install, CLI smoke, schemas, exit codes) and report.
-3. M: Rewrite the plan file to match what was done; render the report.
-4. L: Phase 2 candidates: sourmash integration, coverage comparison.
+1. M: Phase 2 candidates in priority order: sourmash sequence-content comparison,
+   reference-aware coverage comparison, processing-aware merged-read checks.
+2. M: Recalibrate example thresholds with genuine between-run data before any
+   production use.
+3. L: Profile pysam BAM iteration; consider a native reader only with measured
+   justification.
 
 ## recommendation
 
-1. M: Calibrate thresholds with genuine between-run data before production use.
-2. L: Consider pysam-based FASTQ or native readers only after profiling shows the
-   Python per-record loop dominates (benchmarks measure the current bottleneck).
+1. M: Treat COMPATIBLE results as technical assessments only; genotype-based
+   identity verification (Phase 3) remains necessary for biological claims.
+2. L: Keep `--sample-size` at or above the largest compared feature cost when
+   comparing long-read lengths (Wasserstein precision depends on sample size).

@@ -1,5 +1,5 @@
 ---
-title: "seqconsistency MVP — implementation plan"
+title: "seqconsistency MVP — implementation plan (rewritten to match delivered work)"
 author: "Yun Jiang"
 date: today
 format:
@@ -18,97 +18,97 @@ include-in-header:
 # Objective
 
 Implement Phase-1 (mandatory MVP) of the `seqconsistency` package: a pip-installable,
-high-performance sequencing-dataset consistency checker that decides whether datasets are
-poolable, per the full task specification dated 2026-10-21.
+high-performance sequencing-dataset consistency checker that decides whether datasets
+are poolable, per the task specification dated 2026-10-21. This plan was rewritten
+after completion so it records what was actually done; the companion report
+`20261021-120744_seqconsistency-mvp.report.qmd` summarizes it.
 
-# Scope
+# Delivered scope
 
-1. `src/` package: `cli`, `pipeline`, `errors`, `models`, `manifest`, `fastq`, `bam`,
-   `sampling`, `distributions`, `metrics`, `statistics`, `comparison`, `policy`,
-   `parquet_io`, `reporting`, `html_report`.
-2. Parquet manifest (strict schema) + TSV alternative; YAML policy, strict keys.
-3. FASTQ (SE/PE, gzip) single-pass streaming scan: structural validation, full-file
-   counters, full-file histograms, deterministic reservoir sampling of per-read scalar
-   features. Strict 4-line records (documented). Phred+33 only, with a documented
-   ambiguity-aware rejection rule.
-4. BAM scan via pysam: coordinate-order validation, flag-category counters, mapq /
-   insert-size / length histograms, sampled GC / quality features, reference and
-   read-group checks.
-5. Pairwise comparisons: Wasserstein-1 (sampled features), Jensen–Shannon distance
-   (base-2, full-scan histograms), threshold application, `--max-pairs` guard.
-6. Decision engine: five component statuses, four decision states plus `NOT_ASSESSED`,
-   deterministic precedence, stable reason codes, identity declared-vs-verified
-   distinction.
-7. Outputs: five explicit-path Parquet tables (versioned Arrow schemas), provenance
-   JSON, optional self-contained HTML report. Staged writes, path validation,
-   `--overwrite`, cleanup on failure.
-8. Parallelism: `ProcessPoolExecutor` over datasets, bounded submission, exception
-   propagation; `--workers/--threads/--sample-size/--seed` with a documented
-   deterministic resolution rule.
-9. Tests (pytest): FASTQ, BAM, statistics, reproducibility, policy, outputs/errors,
-   memory boundedness.
-10. Benchmarks: synthetic-data harness measuring throughput, memory, scaling; measured
-    results recorded.
-11. README with full documentation; `examples/` with manifests, policies, generator.
+1. `src/` package (17 files): `cli`, `pipeline`, `errors`, `models`, `manifest`,
+   `fastq`, `bam`, `sampling`, `distributions`, `metrics`, `statistics`,
+   `comparison`, `policy`, `parquet_io`, `reporting`, `html_report`, `py.typed`.
+2. Strict Parquet manifest + TSV alternative; YAML policy with unknown-key
+   rejection; example policy marked illustrative/uncalibrated.
+3. FASTQ (SE/PE, gzip) single-pass scan: strict 4-line validation, Phred+33 with a
+   documented Phred+64 heuristic rejection, vectorized per-base statistics via
+   cumsum differencing, PE lockstep scan with per-pair name checks, fastp JSON
+   evidence.
+4. BAM scan via pysam: header and observed coordinate-order enforcement, flag
+   categories, one-per-pair insert sizes, gated deterministic reservoir for
+   GC/quality features, reference-dictionary and read-group comparisons.
+5. Key-based deterministic reservoir sampling (blake2b per-dataset seeds,
+   shared keys for PE mates, bounded memory).
+6. Wasserstein-1 and base-2 Jensen–Shannon distance comparisons with policy
+   thresholds, `--max-pairs` guard, deterministic pair ordering.
+7. Decision engine: five component statuses, four decision states plus
+   NOT_ASSESSED, fixed precedence, stable reason codes, declared-vs-verified
+   identity distinction.
+8. Five explicit-path Parquet tables (versioned schemas, staged atomic writes,
+   best-effort rollback), provenance JSON, self-contained HTML report.
+9. 165 tests (pytest): all spec-listed FASTQ/BAM/statistics/reproducibility/policy/
+   output/error classes plus VmHWM-based bounded-memory tests.
+10. Benchmark harness with measured results
+    (`benchmarks/results-2026-10-21.json` + rendered `.md`).
+11. README with full documentation; 8 runnable examples with generator and
+    runner.
 
-# Key design decisions (assumptions)
+# Process as it actually happened
 
-1. Strict four-line FASTQ; wrapped records rejected with a clear error.
-2. Phred+33 only; bytes outside [33,126] rejected; min ≥ 64 and max ≥ 75 full-file
-   rejected as likely Phred+64 (documented heuristic; spec's ambiguity caveat honored).
-3. Vectorized block statistics via `np.cumsum` differencing over concatenated record
-   buffers — no per-base Python loops; per-block memory bounded regardless of file size.
-4. Sampling = key-based reservoir (iid uniform key per read, k smallest kept), seeded by
-   `blake2b(master_seed, dataset_id)`; sampling unit = read pair (PE) or eligible record.
-5. FASTQ: per-read histograms and counters full-scan; BAM GC/quality metrics sampled
-   (documented) because pysam per-record sequence access dominates cost.
-6. No positional metrics for `ont`/`hifi` (reported `NOT_ASSESSED`); short-read
-   positional metrics capped at 512 (`paired_short`) / 1024 (`merged_short`) cycles with
-   overflow counters.
-7. Example thresholds shipped marked `calibrated: false` — never described as validated.
-8. No sourmash, coverage, or genotype verification in v1 — documented as unimplemented;
-   identity stays `declared, not independently verified`.
-9. Windows not supported (linux-64 pixi platform); POSIX path semantics assumed.
+1. Scaffold: `pyproject.toml`, pixi workspace (conda deps + editable self-install),
+   package layout, tasks (`test`, `lint`, `format`, `typecheck`, `smoke`, `bench`).
+2. `errors` → `models` → `sampling` → `fastq` → `bam` → `distributions` →
+   `metrics` → `statistics` → `comparison` → `policy` → `manifest` →
+   `parquet_io` → `reporting` → `pipeline` → `cli` → `html_report`, in that
+   order, with two commits splitting core implementation from tests/docs.
+3. Tests written per module; failures drove real fixes (list below).
+4. Benchmarks: harness first smoke-tested small, then run clean (a first run
+   was discarded because it overlapped the test suite; measurements must be
+   uncontended).
+5. Examples generated and iterated until each produced its intended decision.
 
-# Steps
+# Defects found and fixed during testing
 
-1. Scaffold: `pyproject.toml`, pixi deps, package layout, `.gitignore` updates.
-2. `errors`, `models` (enums, dataset/config models, feature definitions).
-3. `sampling` (reservoir + seed derivation) with unit tests.
-4. `fastq` block reader + vectorized stats + PE sync; tests.
-5. `bam` scanner; tests (pysam fixture writer).
-6. `distributions` (bin definitions, long-format rows); `metrics` assembly.
-7. `statistics` (W1, JSD wrappers); independent-example tests.
-8. `comparison` (pairs, thresholds, statuses); tests.
-9. `policy` (strict YAML load, decision evaluation); tests.
-10. `manifest` (parquet + TSV, strict validation); tests.
-11. `parquet_io` (schemas, staged writer); `reporting` (provenance); tests.
-12. `pipeline` + `cli`; end-to-end + error-path tests.
-13. `html_report`; smoke test.
-14. Benchmarks; run and record.
-15. README, examples; final verification pass; commit series.
+1. `FeatureReservoir` under-filled when not yet at capacity (gating on
+   `key < threshold` alone); fixed in both the block path and the BAM per-record
+   gate, plus an `is_full` property.
+2. Raw `zlib.error` escaped the gzip reader; now wrapped as `InputDataError`.
+3. `first_in_pair_primary` was never incremented; BAM metric denominators used
+   the flags object instead of the scan result.
+4. `scipy.stats.wasserstein1d` does not exist in scipy 1.18; the historical name
+   `wasserstein_distance` is correct for all supported versions.
+5. Output-path validation now checks input collisions before suggesting
+   `--overwrite` (an input path is never "overwriteable").
+6. `require_fastp_evidence` was loaded but missing from the policy's allowed
+   keys (strict validation correctly rejected it until the key was registered).
+7. Linux `ru_maxrss` is inherited across fork+exec, so memory tests measured the
+   fixture-laden parent; switched to `/proc/self/status` VmHWM (reset on exec).
+8. Missing-threshold findings were invisible when `require_thresholds` was
+   true; now a warning finding accompanies the INSUFFICIENT_EVIDENCE state.
+9. Empty-sample distance calls with `min_observations=0` would raise; the
+   comparison floor is now `max(min_observations, 1)`.
 
-# Files to touch
+# Assumptions and decisions (unchanged from the original plan, all documented)
 
-- `pyproject.toml`, `pixi.toml`, `src/seqconsistency/**`, `tests/**`,
-  `benchmarks/bench.py`, `benchmarks/results/**`, `examples/**`, `README.md`,
-  `docs/plans/**`, `docs/misc/**`.
+Strict four-line FASTQ; Phred+33 only with the documented min≥64/max≥75 heuristic;
+cumsum-differencing vectorization; BAM GC/quality from samples; no positional
+metrics for long reads; shipped thresholds marked uncalibrated; identity never
+claimed verified; sourmash/coverage/genotype modules documented as unimplemented.
 
-# Risks
+# Files touched
 
-1. Numpy vectorization edge cases (empty reads, repeated offsets) — mitigated by cumsum
-   differencing and targeted tests.
-2. PE name-comparison Python cost — measured in benchmarks, documented.
-3. pysam BAM iteration speed — documented as the known bottleneck; no premature native
-   optimization (per spec).
-4. Test runtime growth — small fixtures, pytest markers.
+`pyproject.toml`, `pixi.toml`, `pixi.lock`, `src/seqconsistency/**` (17 files),
+`tests/**` (9 files), `benchmarks/bench.py`, `benchmarks/render_results.py`,
+`benchmarks/results-2026-10-21.{json,md}`, `examples/**` (2 files),
+`policies/example-illustrative.yaml`, `README.md`, `docs/plans/**`,
+`docs/misc/**`.
 
-# Verification criteria
+# Verification (final acceptance numbers)
 
-1. `pixi run test` green; coverage of all spec-listed test classes.
-2. CLI smoke runs on synthetic PE/SE/long-read/BAM groups produce all outputs with
-   correct schemas (verified by read-back).
-3. Error paths produce exit code 2 and clean up staged files.
-4. Determinism: identical outputs across `--workers 1/4` (byte-identical Parquet rows).
-5. Memory: peak RSS does not scale with read count at fixed `--sample-size`.
-6. Benchmarks executed and measured results recorded in `benchmarks/`.
+1. `pixi run test`: 165 passed, exit 0 (includes slow memory tests).
+2. `pixi run typecheck` (mypy, strict-ish): clean. `pixi run lint` (ruff): clean.
+3. CLI smoke: `seqconsistency --version` works; all 8 examples produce intended
+   decisions with correct exit codes (0/1/2 classes verified).
+4. Benchmarks executed clean; results committed (see report for numbers).
+5. Output schemas inspected by read-back (pyarrow/duckdb); no stray persistent
+   files (checked: no `.tmp-*` siblings, no unspecified outputs).
