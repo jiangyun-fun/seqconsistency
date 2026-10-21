@@ -621,34 +621,56 @@ def _reference_dictionary_findings(
                     Severity.INCOMPATIBLE,
                     "Re-align all datasets to one reference, or split the group.",
                 )
-                continue
-            md5_a = {r[0]: r[2] for r in base if r[2]}
-            md5_b = {r[0]: r[2] for r in refs if r[2]}
-            shared = set(md5_a) & set(md5_b)
-            conflicting = [n for n in sorted(shared) if md5_a[n] != md5_b[n]]
-            if conflicting:
-                status = CheckStatus.FAIL
-                finding(
-                    "BAM_REFERENCE_CHECKSUM_CONFLICT",
-                    f"Reference checksums (M5) conflict for contigs {conflicting} "
-                    "between datasets "
-                    f"{bams[0].spec.dataset_id!r} and {other.spec.dataset_id!r}.",
-                    Severity.INCOMPATIBLE,
-                    "Use identical reference FASTA files for all datasets.",
+        # Checksum conflicts must not depend on manifest order: collect every
+        # available M5 per contig across the whole group first, then compare.
+        # Comparing each BAM only against the first one hides a conflict between
+        # later BAMs whenever the first carries no M5 at all.
+        md5_values: dict[str, dict[str, list[str]]] = {}
+        missing_md5: dict[str, list[str]] = {}
+        for o in bams:
+            o_bam = o.bam
+            assert o_bam is not None
+            for name, _length, md5 in o_bam.header.references:
+                if md5:
+                    md5_values.setdefault(name, {}).setdefault(md5, []).append(
+                        o.spec.dataset_id
+                    )
+                else:
+                    missing_md5.setdefault(name, []).append(o.spec.dataset_id)
+        conflicting = [name for name in sorted(md5_values) if len(md5_values[name]) > 1]
+        if conflicting:
+            status = CheckStatus.FAIL
+            detail = "; ".join(
+                f"{name}: "
+                + " vs ".join(
+                    f"{md5} ({', '.join(sorted(ids))})"
+                    for md5, ids in sorted(md5_values[name].items())
                 )
-            elif len(shared) < len(names_a):
-                if status == CheckStatus.PASS:
-                    status = CheckStatus.REVIEW
-                finding(
-                    "BAM_REFERENCE_IDENTITY_UNVERIFIED",
-                    "Reference names and lengths match but M5 checksums are absent "
-                    f"for some contigs between {bams[0].spec.dataset_id!r} and "
-                    f"{other.spec.dataset_id!r}; sequence identity is not fully "
-                    "verified (matching names and lengths do not prove identity).",
-                    Severity.WARNING,
-                    "Align from one reference FASTA or verify checksums if strict "
-                    "identity is required.",
-                )
+                for name in conflicting
+            )
+            finding(
+                "BAM_REFERENCE_CHECKSUM_CONFLICT",
+                f"Reference checksums (M5) conflict for contigs {conflicting} "
+                f"across datasets in group {group!r} ({detail}).",
+                Severity.INCOMPATIBLE,
+                "Use identical reference FASTA files for all datasets.",
+            )
+        elif len(bams) > 1 and missing_md5:
+            if status == CheckStatus.PASS:
+                status = CheckStatus.REVIEW
+            absent = ", ".join(
+                f"{name} (missing in {', '.join(sorted(set(ids)))})"
+                for name, ids in sorted(missing_md5.items())
+            )
+            finding(
+                "BAM_REFERENCE_IDENTITY_UNVERIFIED",
+                "Reference names and lengths match but some M5 checksums are "
+                f"absent across the group ({absent}); sequence identity is not "
+                "fully verified (matching names and lengths do not prove identity).",
+                Severity.WARNING,
+                "Align from one reference FASTA or verify checksums if strict "
+                "identity is required.",
+            )
         # Read-group collisions: same RG id with different definitions.
         seen: dict[str, tuple] = {}
         for o in bams:
@@ -867,7 +889,10 @@ def _technical_assessment(
         )
 
     resolver = policy.resolver_for(profile, assay)
+    assessed = False  # any row compared against a configured threshold
     for row in comparison_rows:
+        if row.get("threshold") is not None:
+            assessed = True
         if row["status"] == STATUS_NOT_ASSESSED:
             # Optional evidence the policy did not request: blocks nothing.
             continue
@@ -940,6 +965,46 @@ def _technical_assessment(
         and status == CheckStatus.PASS
     ):
         status = CheckStatus.MISSING_EVIDENCE
+    if comparison_rows and not assessed:
+        # Spec §7: "If no threshold is configured or calibrated, report the
+        # metric but do not use it to automatically approve pooling." When no
+        # row was assessed against a threshold, nothing supports approval —
+        # with or without require_thresholds. Distances are still reported.
+        status = _worse(status, CheckStatus.MISSING_EVIDENCE)
+        if not policy.require_thresholds:
+            # The per-row branch above already warns when require_thresholds is
+            # true; this finding covers the explicit opt-out mode, where the
+            # distances remain informational and the decision stays
+            # INSUFFICIENT_EVIDENCE.
+            datasets: list[str] = []
+            for row in comparison_rows:
+                for ds in (row.get("dataset_a"), row.get("dataset_b")):
+                    if ds and ds not in datasets:
+                        datasets.append(ds)
+            findings.append(
+                Finding(
+                    finding_id="",
+                    pool_group=comparison_rows[0]["pool_group"],
+                    dataset_id=None,
+                    affected_datasets=datasets,
+                    component="technical",
+                    severity=Severity.WARNING,
+                    reason_code="TECH_NO_THRESHOLD_CONFIGURED",
+                    message=(
+                        f"No comparison in this group was assessed against a "
+                        f"policy threshold (profile {profile!r}, assay {assay!r}); "
+                        "distances are reported but none can approve pooling "
+                        "(spec §7)."
+                    ),
+                    evidence_metric=None,
+                    evidence_value=None,
+                    recommended_action=(
+                        "Add calibrated thresholds for automatic approval; with "
+                        "require_thresholds: false the output stays a report and "
+                        "the decision stays INSUFFICIENT_EVIDENCE."
+                    ),
+                )
+            )
     return status, findings
 
 

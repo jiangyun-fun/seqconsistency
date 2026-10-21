@@ -9,10 +9,13 @@ Design (README § BAM processing):
   supplementary). Supplementary and secondary records are counted as categories but
   never as independent sequencing reads.
 - Insert size: one observation per pair — primary, paired, properly-paired,
-  first-in-pair, TLEN > 0. This counts each properly-paired template once and never
-  builds a mate dictionary. Pairs with TLEN <= 0 or without the proper-pair flag are
-  excluded (undercount reported through the eligible counter — a documented
-  limitation).
+  first-in-pair, TLEN != 0 (absolute value used). The SAM spec defines TLEN as
+  negative for the rightmost segment, so a proper pair whose first segment is the
+  rightmost one carries TLEN < 0; requiring TLEN > 0 would silently drop those
+  pairs and bias the distribution. This counts each properly-paired template once
+  and never builds a mate dictionary. Pairs with TLEN == 0 or without the
+  proper-pair flag are excluded (undercount reported through the eligible
+  counter — a documented limitation).
 - GC, base-quality, and per-read mean-quality distributions come from the sampled
   eligible primary records (``sampling_mode=sample``): pysam per-record sequence
   access dominates scan cost, so full-file sequence extraction is deliberately not
@@ -233,8 +236,9 @@ def scan_bam(
                     if flag & FLAG_FIRST and not unmapped:
                         flags.read1_mapped += 1
                     if flag & FLAG_FIRST and flag & FLAG_PROPER and not unmapped:
-                        tlen = record.template_length
-                        if tlen > 0:
+                        raw_tlen = record.template_length
+                        if raw_tlen != 0:
+                            tlen = abs(raw_tlen)
                             buf_insert.append(tlen)
                             insert_sum += tlen
                             insert_sqsum += tlen * tlen

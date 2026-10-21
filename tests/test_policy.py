@@ -173,18 +173,55 @@ def test_no_threshold_blocks_compatible_when_required():
     assert any(f.reason_code == "TECH_NO_THRESHOLD_CONFIGURED" for f in findings)
 
 
-def test_no_threshold_allowed_when_not_required():
-    # With require_thresholds: false the user explicitly opts out: unthresholded
-    # metrics no longer gate the decision (INFO finding only), mirroring the
-    # "optional unrequested checks must not block" rule. Documented in README.
+def test_no_thresholds_cannot_approve_even_when_not_required():
+    # Spec §7 is unconditional: "If no threshold is configured or calibrated,
+    # report the metric but do not use it to automatically approve pooling."
+    # With require_thresholds: false AND zero assessed rows, technical status
+    # must be MISSING_EVIDENCE, never PASS (review round 2, point 4).
     p = _policy(MINIMAL_POLICY.replace("require_thresholds: true", "require_thresholds: false"))
     outcomes = [_outcome("a"), _outcome("b")]
-    decision, findings = evaluate_group(outcomes, [_row(STATUS_NO_THRESHOLD)], p)
+    rows = [_row(STATUS_NO_THRESHOLD, threshold=None)]
+    decision, findings = evaluate_group(outcomes, rows, p)
+    assert decision.technical_status is CheckStatus.MISSING_EVIDENCE
+    assert decision.overall_decision is DecisionState.INSUFFICIENT_EVIDENCE
+    assert any(
+        f.reason_code == "TECH_NO_THRESHOLD_CONFIGURED" and f.severity.value == "warning"
+        for f in findings
+    )
+    # Per-row INFO findings still report every unthresholded distance.
+    assert any(
+        f.reason_code == "TECH_NO_THRESHOLD_CONFIGURED" and f.severity.value == "info"
+        for f in findings
+    )
+
+
+def test_assessed_rows_decide_when_others_unthresholded():
+    # require_thresholds: false with SOME thresholds: assessed rows drive the
+    # decision; unthresholded metrics stay informational (neither approve nor
+    # block) — the natural reading of the spec sentence.
+    p = _policy(MINIMAL_POLICY.replace("require_thresholds: true", "require_thresholds: false"))
+    outcomes = [_outcome("a"), _outcome("b")]
+    rows = [
+        _row(STATUS_NO_THRESHOLD, threshold=None, metric="read_length"),
+        _row(STATUS_PASS, metric="gc_content", threshold=0.10),
+    ]
+    decision, findings = evaluate_group(outcomes, rows, p)
+    assert decision.technical_status is CheckStatus.PASS
     assert decision.overall_decision is DecisionState.COMPATIBLE
     assert any(
         f.reason_code == "TECH_NO_THRESHOLD_CONFIGURED" and f.severity.value == "info"
         for f in findings
     )
+
+
+def test_single_dataset_group_without_rows_stays_compatible():
+    # One dataset means zero pairs and zero comparison rows; the no-assessed-
+    # rows guard must not turn a trivially poolable group into a failure.
+    p = _policy(MINIMAL_POLICY.replace("require_thresholds: true", "require_thresholds: false"))
+    decision, findings = evaluate_group([_outcome("a")], [], p)
+    assert decision.technical_status is CheckStatus.PASS
+    assert decision.overall_decision is DecisionState.COMPATIBLE
+    assert not [f for f in findings if f.component == "technical"]
 
 
 def test_identity_verification_requested_yields_insufficient():
@@ -299,6 +336,57 @@ def test_bam_reference_mismatch_incompatible():
     assert any(f.reason_code == "BAM_REFERENCE_DICTIONARY_MISMATCH" for f in findings)
 
 
+def _bam_outcome(dataset_id: str, refs):
+    from seqconsistency.models import BamFlagCounts, BamHeaderInfo, BamScanResult
+
+    o = _outcome(dataset_id, read_type="paired_short", input_format="bam")
+    o.bam = BamScanResult(
+        dataset_id=dataset_id,
+        flags=BamFlagCounts(),
+        header=BamHeaderInfo("coordinate", refs, []),
+        eligible_observations=10,
+        total_bases=1000,
+        mapq_hist=None,
+        insert_hist=None,
+        length_hist=None,
+        sample_reads={},
+        sampled_count=0,
+        scan_seconds=0.0,
+        records_read=10,
+    )
+    return o
+
+
+@pytest.mark.parametrize("order", [tuple("abc"), tuple("bac"), tuple("cab")])
+def test_bam_checksum_conflict_found_regardless_of_order(order):
+    # A conflict between the second and third BAM must surface even when the
+    # first BAM carries no M5 at all (order-independent aggregation).
+    refs = {
+        "a": [("chr1", 1000, None)],
+        "b": [("chr1", 1000, "1" * 32)],
+        "c": [("chr1", 1000, "2" * 32)],
+    }
+    outcomes = [_bam_outcome(n, refs[n]) for n in order]
+    decision, findings = evaluate_group(outcomes, [_row(STATUS_PASS)], _policy())
+    assert any(f.reason_code == "BAM_REFERENCE_CHECKSUM_CONFLICT" for f in findings)
+    assert decision.metadata_status is CheckStatus.FAIL
+    assert decision.overall_decision is DecisionState.INCOMPATIBLE
+
+
+def test_bam_missing_md5_is_review_not_conflict():
+    # Absent checksums keep the identity-unverified REVIEW; they must never be
+    # reported as a conflict (matching names and lengths are not evidence of
+    # either identity or conflict).
+    outcomes = [
+        _bam_outcome("a", [("chr1", 1000, "1" * 32)]),
+        _bam_outcome("b", [("chr1", 1000, None)]),
+    ]
+    decision, findings = evaluate_group(outcomes, [_row(STATUS_PASS)], _policy())
+    assert any(f.reason_code == "BAM_REFERENCE_IDENTITY_UNVERIFIED" for f in findings)
+    assert not any(f.reason_code == "BAM_REFERENCE_CHECKSUM_CONFLICT" for f in findings)
+    assert decision.metadata_status is CheckStatus.REVIEW
+
+
 def test_merged_short_missing_fastp_review_when_required():
     p = _policy(
         MINIMAL_POLICY.replace(
@@ -347,15 +435,21 @@ def test_calibrated_threshold_allows_approval():
 
 
 def test_not_assessed_rows_block_nothing():
+    # Optional unrequested evidence (e.g. fastp NOT_ASSESSED) neither blocks nor
+    # downgrades a decision that assessed rows support. Alone it provides no
+    # support for approval, so a NOT_ASSESSED-only row set (which the pipeline
+    # cannot produce — every pair yields metric rows) stays INSUFFICIENT_EVIDENCE.
     from seqconsistency.comparison import STATUS_NOT_ASSESSED
 
     p = _policy()
     outcomes = [_outcome("a"), _outcome("b")]
-    row = dict(
+    optional = dict(
         _row(STATUS_NOT_ASSESSED), value=None, threshold=None, reason_code="FASTP_EVIDENCE_OPTIONAL"
     )
-    decision, _ = evaluate_group(outcomes, [row], p)
+    decision, _ = evaluate_group(outcomes, [optional, _row(STATUS_PASS)], p)
     assert decision.overall_decision is DecisionState.COMPATIBLE
+    decision_alone, _ = evaluate_group(outcomes, [optional], p)
+    assert decision_alone.overall_decision is DecisionState.INSUFFICIENT_EVIDENCE
 
 
 def test_bam_conflicting_sm_values_are_identity_conflict():

@@ -165,6 +165,42 @@ def test_insert_size_one_observation_per_pair(tmp_path: Path):
     assert len(res.sample_inserts) == 50
 
 
+def test_insert_size_includes_pairs_with_read1_rightmost(tmp_path: Path):
+    # Proper pairs whose FIRST segment is the rightmost one carry TLEN < 0 on
+    # that segment (SAM spec). Requiring TLEN > 0 silently dropped every such
+    # pair and biased the distribution (review round 2, point 5): the scan must
+    # take abs(TLEN) and still observe one row per pair.
+    import pysam
+
+    p = tmp_path / "rf_pairs.bam"
+    header = {"HD": {"SO": "coordinate"}, "SQ": [{"SN": "chr1", "LN": 100000}]}
+    with pysam.AlignmentFile(str(p), "wb", header=header) as out:
+        for i in range(100):
+            # read2 leftmost (TLEN +300), read1 rightmost (TLEN -300).
+            for flag, start, tlen in (
+                (163, i * 500, 300),  # second in pair, forward
+                (83, i * 500 + 200, -300),  # first in pair, reverse
+            ):
+                a = pysam.AlignedSegment(out.header)
+                a.query_name = f"pair{i}"
+                a.query_sequence = "ACGT" * 25
+                a.query_qualities = np.full(100, 30, dtype=np.uint8)
+                a.flag = flag
+                a.reference_id = 0
+                a.reference_start = start
+                a.cigarstring = "100M"
+                a.mapping_quality = 60
+                a.template_length = tlen
+                out.write(a)
+    res = scan_bam("ds", p, ReadType.PAIRED_SHORT, SAMPLING, 50)
+    assert res.flags.first_in_pair_primary == 100
+    assert res.flags.properly_paired_primary == 200
+    assert res.insert_hist is not None
+    assert res.insert_hist.observation_count == 100  # every pair observed once
+    assert res.insert_sum // 300 == 100
+    assert len(res.sample_inserts) == 50
+
+
 def test_reference_dict_and_read_groups(tmp_path: Path):
     p = make_bam(
         tmp_path / "rg.bam",

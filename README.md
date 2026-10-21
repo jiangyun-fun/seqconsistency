@@ -145,7 +145,12 @@ automatically approve pooling"):
 
 1. A metric with **no threshold** is reported but never approves: with
    `require_thresholds: true` (default) it blocks `COMPATIBLE`
-   (`TECH_NO_THRESHOLD_CONFIGURED`, group `INSUFFICIENT_EVIDENCE`).
+   (`TECH_NO_THRESHOLD_CONFIGURED`, group `INSUFFICIENT_EVIDENCE`). With
+   `require_thresholds: false` each unthresholded distance is reported with an INFO
+   finding instead — but if **no** comparison in the group was assessed against a
+   threshold at all, the technical component is `MISSING_EVIDENCE` and the group is
+   `INSUFFICIENT_EVIDENCE` regardless: the opt-out makes the run a report, never an
+   approval.
 2. A **PASS against a `calibrated: false` threshold** is reported with
    `threshold_calibrated=false` in the comparisons table and withholds automatic
    approval: the group falls to `REVIEW` with a `TECH_THRESHOLD_UNCALIBRATED`
@@ -197,7 +202,17 @@ biological validation from synthetic software tests.
   which no platform emits, while under Phred+64 it means Q26, which is routine.
   Uniform high-quality Phred+33 files (for example every byte `K`, uniform Q42)
   are accepted. Files with any low-quality base (byte < 64) are unambiguous
-  Phred+33 and accepted.
+  Phred+33 and accepted. The exact decision rule: a file is rejected only when
+  **every** quality byte in the whole file is ≥ 64 **and** at least one is ≥ 90 —
+  the rejection window is *entirely* uniform-high files (every base ≥ Q31, some
+  ≥ Q58), which no standard platform or common simulator emits; a mixed file
+  containing Q60 records alongside ordinary ones is accepted. A rejected file that
+  you know is genuinely Phred+33 (synthetic uniform-high qualities) can be
+  processed after making the file carry the encoding it claims — for example
+  re-encode the qualities with a realistic distribution or a value below Q31 —
+  or report it as an issue; v1 has no override flag by design, because the same
+  signature is produced by genuine Phred+64 files that would otherwise be read
+  with every quality silently shifted by +31.
 - **Paired-end synchronization** compares corresponding records — not just counts.
   Read names are normalized by taking the first whitespace-delimited token and
   removing a trailing `/1` or `/2` (covering legacy suffixes and Illumina/CASAVA
@@ -227,17 +242,23 @@ biological validation from synthetic software tests.
   base qualities or sequence count as **unavailable (NaN), never zero**, with
   dedicated counters.
 - Insert size: **one observation per pair** — primary, paired, properly-paired,
-  first-in-pair, TLEN > 0. This never builds a mate dictionary. Documented
-  limitation: pairs without the proper-pair flag or with TLEN ≤ 0 are excluded, so
-  insert-size observations can undercount pairs in libraries with many discordant
-  mates; the observation count is reported. Insert-size comparison applies only
-  to the `paired_short` profile — unpaired and long-read BAMs get no insert-size
-  requirement (inapplicable evidence must never block).
+  first-in-pair, `TLEN != 0` (absolute value used). The SAM spec defines TLEN as
+  negative on the rightmost segment, so a proper pair whose first segment is the
+  rightmost one carries `TLEN < 0`; requiring `TLEN > 0` would silently drop those
+  pairs and bias the distribution. This never builds a mate dictionary. Documented
+  limitation: pairs without the proper-pair flag or with `TLEN == 0` (unknown
+  template length) are excluded, so insert-size observations can undercount pairs
+  in libraries with many discordant mates; the observation count is reported.
+  Insert-size comparison applies only to the `paired_short` profile — unpaired and
+  long-read BAMs get no insert-size requirement (inapplicable evidence must never
+  block).
 - Reference dictionaries are compared within a group: contig names, lengths, and
-  order must match (mismatch ⇒ `INCOMPATIBLE` finding); `M5` checksums are compared
-  when present on both sides (conflict ⇒ `INCOMPATIBLE`); when checksums are absent
-  the group gets a `BAM_REFERENCE_IDENTITY_UNVERIFIED` warning — matching names and
-  lengths do not prove sequence identity.
+  order must match (mismatch ⇒ `INCOMPATIBLE` finding). `M5` checksums are
+  aggregated per contig across **every** BAM in the group, independent of manifest
+  order: two or more distinct values for one contig ⇒ `INCOMPATIBLE`
+  (`BAM_REFERENCE_CHECKSUM_CONFLICT`). When any checksum is absent the group gets a
+  `BAM_REFERENCE_IDENTITY_UNVERIFIED` warning — matching names and lengths do not
+  prove sequence identity.
 - Read-group IDs may legitimately differ across runs; an ID **redefined
   differently** in two datasets is a `BAM_READ_GROUP_COLLISION` incompatibility.
 - Header sample metadata is reconciled with the manifest: several distinct
