@@ -182,16 +182,26 @@ class StagedWriter:
         """Close and delete the staged file without publishing.
 
         Idempotent and never raises: after ``close_publish`` the staged path no
-        longer exists, and closing an already-closed writer is harmless to ignore.
+        longer exists, and closing an already-closed writer is harmless to
+        ignore. Cleanup failures are logged (never raised) so the error that
+        triggered the abort stays the error the caller sees.
         """
         try:
             self._writer.close()
         except Exception:  # noqa: BLE001 — cleanup must not mask the real error
-            pass
+            logger.warning(
+                "failed to close staged writer for %s during abort",
+                self.final_path,
+                exc_info=True,
+            )
         try:
             self.staged_path.unlink(missing_ok=True)
         except OSError:
-            pass
+            logger.warning(
+                "failed to delete staged file %s during abort",
+                self.staged_path,
+                exc_info=True,
+            )
 
     @property
     def rows_written(self) -> int:
