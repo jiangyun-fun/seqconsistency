@@ -4,7 +4,7 @@ Writes synthetic inputs, manifests, and a policy per scenario into --out-dir:
 
 01_paired_short          two Illumina PE runs of one library        -> COMPATIBLE
 02_merged_short          two merged-read FASTQ datasets (+fastp)   -> COMPATIBLE/REVIEW
-03_ont                   two ONT run datasets                       -> REVIEW
+03_ont                   two ONT run datasets                       -> COMPATIBLE
 04_bam                   two coordinate-sorted BAM datasets         -> COMPATIBLE
 05_shifted_gc            shifted GC content                         -> REVIEW
 06_incompatible          different declared samples                 -> INCOMPATIBLE
@@ -77,7 +77,7 @@ def make_bam(path: Path, n: int, seed: int, gc: float = 0.5) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     header = {
         "HD": {"SO": "coordinate"},
-        "SQ": [{"SN": "chr1", "LN": 5_000_000}],
+        "SQ": [{"SN": "chr1", "LN": 5_000_000, "M5": "0f0b9a2d7d97e7f4a1c1b2c3d4e5f607"}],
         "RG": [{"ID": "rg1", "SM": "sample1", "LB": "lib1"}],
     }
     rng = np.random.default_rng(seed)
@@ -248,7 +248,7 @@ def main(argv: list[str] | None = None) -> int:
             }
         )
     m = write_manifest(d / "manifest.tsv", rows)
-    notes.append(f"03 ont (expect REVIEW — uncalibrated long-read thresholds): {m}")
+    notes.append(f"03 ont (expect COMPATIBLE with illustrative thresholds): {m}")
 
     # 04 — BAM.
     d = out / "04_bam"
@@ -267,6 +267,7 @@ def main(argv: list[str] | None = None) -> int:
                 "read_type": "paired_short",
                 "input_format": "bam",
                 "path1": str(b1),
+                "processing_id": "bwa-v1",
                 "reference_id": "chr1-demo",
             },
             {
@@ -279,6 +280,7 @@ def main(argv: list[str] | None = None) -> int:
                 "read_type": "paired_short",
                 "input_format": "bam",
                 "path1": str(b2),
+                "processing_id": "bwa-v1",
                 "reference_id": "chr1-demo",
             },
         ],
