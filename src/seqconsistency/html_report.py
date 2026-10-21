@@ -102,7 +102,21 @@ def render_html_report(
     outcomes: list[DatasetOutcome],
     policy: Policy,
     provenance: dict[str, Any],
+    *,
+    findings_total: int | None = None,
+    comparisons_total: int | None = None,
 ) -> str:
+    """Render the self-contained report.
+
+    ``findings``/``comparison_rows`` may be bounded previews of the full tables
+    (the pipeline retains at most MAX_FINDINGS/MAX_COMPARISONS rows in memory);
+    pass the true row counts in ``findings_total``/``comparisons_total`` so the
+    display limits state what is shown versus what the Parquet outputs carry.
+    """
+    if findings_total is None:
+        findings_total = len(findings)
+    if comparisons_total is None:
+        comparisons_total = len(comparison_rows)
     parts: list[str] = []
     parts.append("<!DOCTYPE html><html lang='en'><head><meta charset='utf-8'>")
     parts.append("<meta name='viewport' content='width=device-width, initial-scale=1'>")
@@ -171,7 +185,7 @@ def render_html_report(
     # Findings.
     parts.append("<h2>Findings</h2>")
     shown = findings[:MAX_FINDINGS]
-    if not findings:
+    if findings_total == 0:
         parts.append("<p class='meta'>None.</p>")
     for f in shown:
         parts.append(
@@ -182,9 +196,9 @@ def render_html_report(
             f"{_esc(f.pool_group)})</span><br>{_esc(f.message)}<br>"
             f"<span class='meta'>Action: {_esc(f.recommended_action)}</span></div>"
         )
-    if len(findings) > MAX_FINDINGS:
+    if findings_total > MAX_FINDINGS:
         parts.append(
-            f"<p class='meta'>Showing {MAX_FINDINGS} of {len(findings)} findings — "
+            f"<p class='meta'>Showing {MAX_FINDINGS} of {findings_total} findings — "
             "the findings Parquet output carries all of them.</p>"
         )
 
@@ -192,7 +206,7 @@ def render_html_report(
     parts.append("<h2>Pairwise comparisons</h2>")
     parts.append(
         f"<p class='meta'>Showing up to {MAX_COMPARISONS} rows of "
-        f"{len(comparison_rows)}; the comparisons Parquet output is complete.</p>"
+        f"{comparisons_total}; the comparisons Parquet output is complete.</p>"
     )
     parts.append(
         "<table><tr><th>group</th><th>A</th><th>B</th><th>metric</th>"

@@ -862,150 +862,175 @@ def _identity_assessment(
     return CheckStatus.MISSING_EVIDENCE, IdentityEvidenceLevel.DECLARED_ONLY, findings
 
 
+class TechnicalAssessment:
+    """Incremental technical assessment over streaming comparison rows.
+
+    ``feed`` processes one batch of rows (typically one dataset pair) and returns
+    that batch's findings, so the pipeline can write them out immediately — memory
+    stays bounded by one batch instead of one group's full comparison table.
+    ``finalize`` applies the group-level rules and returns the component status
+    with any tail findings.
+    """
+
+    def __init__(self, policy: Policy, profile: str, assay: str) -> None:
+        self._policy = policy
+        self._profile = profile
+        self._assay = assay
+        self._resolver = policy.resolver_for(profile, assay)
+        self.status = CheckStatus.PASS
+        self._assessed = False  # any row compared against a configured threshold
+        self._rows_seen = 0
+        self._pool_group: str | None = None
+        self._datasets: list[str] = []
+
+    def feed(self, rows: Iterable[dict[str, Any]]) -> list[Finding]:
+        """Assess one batch of comparison rows; returns this batch's findings."""
+        batch: list[Finding] = []
+
+        def finding(
+            reason: str, message: str, severity: Severity, action: str, row: dict[str, Any]
+        ) -> None:
+            batch.append(
+                Finding(
+                    finding_id="",
+                    pool_group=row["pool_group"],
+                    dataset_id=None,
+                    affected_datasets=[row["dataset_a"], row["dataset_b"]],
+                    component="technical",
+                    severity=severity,
+                    reason_code=reason,
+                    message=message,
+                    evidence_metric=row["metric"],
+                    evidence_value=row["value"],
+                    recommended_action=action,
+                )
+            )
+
+        for row in rows:
+            self._rows_seen += 1
+            if self._pool_group is None:
+                self._pool_group = row["pool_group"]
+            for ds in (row.get("dataset_a"), row.get("dataset_b")):
+                if ds and ds not in self._datasets:
+                    self._datasets.append(ds)
+            if row.get("threshold") is not None:
+                self._assessed = True
+            if row["status"] == STATUS_NOT_ASSESSED:
+                # Optional evidence the policy did not request: blocks nothing.
+                continue
+            if (
+                row["status"] == STATUS_INSUFFICIENT_OBSERVATIONS
+                or row["status"] == STATUS_MISSING_EVIDENCE
+            ):
+                self.status = _worse(self.status, CheckStatus.MISSING_EVIDENCE)
+            elif row["status"] == STATUS_EXCEED:
+                rule = self._resolver(row["metric"], row["stratum"])
+                action = rule.action if rule else "review"
+                severity = Severity.INCOMPATIBLE if action == "incompatible" else Severity.WARNING
+                candidate = CheckStatus.FAIL if action == "incompatible" else CheckStatus.REVIEW
+                self.status = _worse(self.status, candidate)
+                finding(
+                    "TECH_THRESHOLD_EXCEEDED",
+                    f"{row.get('metric')} distance {row['value']:.6g} between "
+                    f"{row.get('dataset_a')!r} and {row.get('dataset_b')!r} exceeds "
+                    f"the policy maximum {row['threshold']:.6g} "
+                    f"({row.get('method')}, stratum {row.get('stratum')}).",
+                    severity,
+                    "Inspect the distributions; if the shift is expected, recalibrate "
+                    "the threshold with genuine between-run data; otherwise do not pool.",
+                    row,
+                )
+            elif row["status"] == STATUS_NO_THRESHOLD and self._policy.require_thresholds:
+                self.status = _worse(self.status, CheckStatus.MISSING_EVIDENCE)
+                finding(
+                    "TECH_NO_THRESHOLD_CONFIGURED",
+                    f"No policy threshold for metric {row.get('metric')!r} "
+                    f"(stratum {row.get('stratum')}); with require_thresholds the "
+                    "group cannot be COMPATIBLE on uncalibrated distances.",
+                    Severity.WARNING,
+                    "Add a calibrated threshold for this metric, or set "
+                    "technical.require_thresholds false knowingly.",
+                    row,
+                )
+            elif row["status"] == STATUS_NO_THRESHOLD and not self._policy.require_thresholds:
+                finding(
+                    "TECH_NO_THRESHOLD_CONFIGURED",
+                    f"No policy threshold for metric {row.get('metric')!r} "
+                    f"(stratum {row.get('stratum')}); the distance "
+                    f"{row['value']:.6g} is reported but not assessed.",
+                    Severity.INFO,
+                    "Add a calibrated threshold before relying on this metric.",
+                    row,
+                )
+            elif row["status"] == STATUS_PASS and row.get("threshold_calibrated") is False:
+                # Spec §7: "If no threshold is configured or calibrated, report the
+                # metric but do not use it to automatically approve pooling." A PASS
+                # against an uncalibrated threshold is reported, never approving.
+                # This is a REVIEW (assessment ran, verdict untrusted), distinct from
+                # MISSING_EVIDENCE (no threshold at all).
+                self.status = _worse(self.status, CheckStatus.REVIEW)
+                finding(
+                    "TECH_THRESHOLD_UNCALIBRATED",
+                    f"Metric {row.get('metric')!r} (stratum {row.get('stratum')}) is "
+                    f"within its maximum for {row.get('dataset_a')!r} and "
+                    f"{row.get('dataset_b')!r}, but the threshold is marked "
+                    "uncalibrated, so it cannot automatically approve pooling.",
+                    Severity.WARNING,
+                    "Calibrate thresholds with genuine between-run data, then set "
+                    "calibrated: true; a human must accept this REVIEW otherwise.",
+                    row,
+                )
+        return batch
+
+    def finalize(self) -> tuple[CheckStatus, list[Finding]]:
+        """Apply group-level rules; returns the component status and tail findings."""
+        tail: list[Finding] = []
+        if self._rows_seen and not self._assessed:
+            # Spec §7: "If no threshold is configured or calibrated, report the
+            # metric but do not use it to automatically approve pooling." When no
+            # row was assessed against a threshold, nothing supports approval —
+            # with or without require_thresholds. Distances are still reported.
+            self.status = _worse(self.status, CheckStatus.MISSING_EVIDENCE)
+            if not self._policy.require_thresholds:
+                # The per-row branch above already warns when require_thresholds is
+                # true; this finding covers the explicit opt-out mode, where the
+                # distances remain informational and the decision stays
+                # INSUFFICIENT_EVIDENCE.
+                tail.append(
+                    Finding(
+                        finding_id="",
+                        pool_group=self._pool_group or "",
+                        dataset_id=None,
+                        affected_datasets=self._datasets,
+                        component="technical",
+                        severity=Severity.WARNING,
+                        reason_code="TECH_NO_THRESHOLD_CONFIGURED",
+                        message=(
+                            f"No comparison in this group was assessed against a "
+                            f"policy threshold (profile {self._profile!r}, assay "
+                            f"{self._assay!r}); distances are reported but none can "
+                            "approve pooling (spec §7)."
+                        ),
+                        evidence_metric=None,
+                        evidence_value=None,
+                        recommended_action=(
+                            "Add calibrated thresholds for automatic approval; with "
+                            "require_thresholds: false the output stays a report and "
+                            "the decision stays INSUFFICIENT_EVIDENCE."
+                        ),
+                    )
+                )
+        return self.status, tail
+
+
 def _technical_assessment(
     comparison_rows: list[dict[str, Any]], policy: Policy, profile: str, assay: str
 ) -> tuple[CheckStatus, list[Finding]]:
-    """Group-level technical status from comparison rows."""
-    findings: list[Finding] = []
-    status = CheckStatus.PASS
-
-    def finding(
-        reason: str, message: str, severity: Severity, action: str, row: dict[str, Any]
-    ) -> None:
-        findings.append(
-            Finding(
-                finding_id="",
-                pool_group=row["pool_group"],
-                dataset_id=None,
-                affected_datasets=[row["dataset_a"], row["dataset_b"]],
-                component="technical",
-                severity=severity,
-                reason_code=reason,
-                message=message,
-                evidence_metric=row["metric"],
-                evidence_value=row["value"],
-                recommended_action=action,
-            )
-        )
-
-    resolver = policy.resolver_for(profile, assay)
-    assessed = False  # any row compared against a configured threshold
-    for row in comparison_rows:
-        if row.get("threshold") is not None:
-            assessed = True
-        if row["status"] == STATUS_NOT_ASSESSED:
-            # Optional evidence the policy did not request: blocks nothing.
-            continue
-        if (
-            row["status"] == STATUS_INSUFFICIENT_OBSERVATIONS
-            or row["status"] == STATUS_MISSING_EVIDENCE
-        ):
-            status = _worse(status, CheckStatus.MISSING_EVIDENCE)
-        elif row["status"] == STATUS_EXCEED:
-            rule = resolver(row["metric"], row["stratum"])
-            action = rule.action if rule else "review"
-            severity = Severity.INCOMPATIBLE if action == "incompatible" else Severity.WARNING
-            status = _worse(
-                status, CheckStatus.FAIL if action == "incompatible" else CheckStatus.REVIEW
-            )
-            finding(
-                "TECH_THRESHOLD_EXCEEDED",
-                f"{row.get('metric')} distance {row['value']:.6g} between "
-                f"{row.get('dataset_a')!r} and {row.get('dataset_b')!r} exceeds "
-                f"the policy maximum {row['threshold']:.6g} "
-                f"({row.get('method')}, stratum {row.get('stratum')}).",
-                severity,
-                "Inspect the distributions; if the shift is expected, recalibrate "
-                "the threshold with genuine between-run data; otherwise do not pool.",
-                row,
-            )
-        elif row["status"] == STATUS_NO_THRESHOLD and policy.require_thresholds:
-            status = _worse(status, CheckStatus.MISSING_EVIDENCE)
-            finding(
-                "TECH_NO_THRESHOLD_CONFIGURED",
-                f"No policy threshold for metric {row.get('metric')!r} "
-                f"(stratum {row.get('stratum')}); with require_thresholds the "
-                "group cannot be COMPATIBLE on uncalibrated distances.",
-                Severity.WARNING,
-                "Add a calibrated threshold for this metric, or set "
-                "technical.require_thresholds false knowingly.",
-                row,
-            )
-        elif row["status"] == STATUS_NO_THRESHOLD and not policy.require_thresholds:
-            finding(
-                "TECH_NO_THRESHOLD_CONFIGURED",
-                f"No policy threshold for metric {row.get('metric')!r} "
-                f"(stratum {row.get('stratum')}); the distance "
-                f"{row['value']:.6g} is reported but not assessed.",
-                Severity.INFO,
-                "Add a calibrated threshold before relying on this metric.",
-                row,
-            )
-        elif row["status"] == STATUS_PASS and row.get("threshold_calibrated") is False:
-            # Spec §7: "If no threshold is configured or calibrated, report the
-            # metric but do not use it to automatically approve pooling." A PASS
-            # against an uncalibrated threshold is reported, never approving.
-            # This is a REVIEW (assessment ran, verdict untrusted), distinct from
-            # MISSING_EVIDENCE (no threshold at all).
-            status = _worse(status, CheckStatus.REVIEW)
-            finding(
-                "TECH_THRESHOLD_UNCALIBRATED",
-                f"Metric {row.get('metric')!r} (stratum {row.get('stratum')}) is "
-                f"within its maximum for {row.get('dataset_a')!r} and "
-                f"{row.get('dataset_b')!r}, but the threshold is marked "
-                "uncalibrated, so it cannot automatically approve pooling.",
-                Severity.WARNING,
-                "Calibrate thresholds with genuine between-run data, then set "
-                "calibrated: true; a human must accept this REVIEW otherwise.",
-                row,
-            )
-    if (
-        any(r["status"] == STATUS_NO_THRESHOLD for r in comparison_rows)
-        and policy.require_thresholds
-        and status == CheckStatus.PASS
-    ):
-        status = CheckStatus.MISSING_EVIDENCE
-    if comparison_rows and not assessed:
-        # Spec §7: "If no threshold is configured or calibrated, report the
-        # metric but do not use it to automatically approve pooling." When no
-        # row was assessed against a threshold, nothing supports approval —
-        # with or without require_thresholds. Distances are still reported.
-        status = _worse(status, CheckStatus.MISSING_EVIDENCE)
-        if not policy.require_thresholds:
-            # The per-row branch above already warns when require_thresholds is
-            # true; this finding covers the explicit opt-out mode, where the
-            # distances remain informational and the decision stays
-            # INSUFFICIENT_EVIDENCE.
-            datasets: list[str] = []
-            for row in comparison_rows:
-                for ds in (row.get("dataset_a"), row.get("dataset_b")):
-                    if ds and ds not in datasets:
-                        datasets.append(ds)
-            findings.append(
-                Finding(
-                    finding_id="",
-                    pool_group=comparison_rows[0]["pool_group"],
-                    dataset_id=None,
-                    affected_datasets=datasets,
-                    component="technical",
-                    severity=Severity.WARNING,
-                    reason_code="TECH_NO_THRESHOLD_CONFIGURED",
-                    message=(
-                        f"No comparison in this group was assessed against a "
-                        f"policy threshold (profile {profile!r}, assay {assay!r}); "
-                        "distances are reported but none can approve pooling "
-                        "(spec §7)."
-                    ),
-                    evidence_metric=None,
-                    evidence_value=None,
-                    recommended_action=(
-                        "Add calibrated thresholds for automatic approval; with "
-                        "require_thresholds: false the output stays a report and "
-                        "the decision stays INSUFFICIENT_EVIDENCE."
-                    ),
-                )
-            )
-    return status, findings
+    """Group-level technical status from comparison rows (batch convenience)."""
+    assessment = TechnicalAssessment(policy, profile, assay)
+    findings = assessment.feed(comparison_rows)
+    status, tail = assessment.finalize()
+    return status, findings + tail
 
 
 _WORSE_ORDER = [
@@ -1023,16 +1048,11 @@ def _worse(current: CheckStatus, candidate: CheckStatus) -> CheckStatus:
     return current
 
 
-def evaluate_group(
-    outcomes: list[DatasetOutcome],
-    comparison_rows: list[dict[str, Any]],
-    policy: Policy,
-) -> tuple[GroupDecision, list[Finding]]:
-    """Evaluate one pooling group: component statuses, decision, findings."""
-    group = outcomes[0].spec.pool_group
-    profile = outcomes[0].spec.read_type.value
-    assay = outcomes[0].spec.assay
-
+def group_components(
+    outcomes: list[DatasetOutcome], policy: Policy
+) -> tuple[CheckStatus, CheckStatus, IdentityEvidenceLevel, list[Finding]]:
+    """Metadata and identity component statuses plus their findings (bounded by
+    dataset count, independent of comparison volume)."""
     metadata_status, meta_findings = _metadata_findings(outcomes, policy)
     ref_status, ref_findings = _reference_dictionary_findings(outcomes, policy)
     metadata_status = _worse(metadata_status, ref_status)
@@ -1042,7 +1062,27 @@ def evaluate_group(
     identity_status = _worse(identity_status, bam_id_status)
     if bam_id_status is CheckStatus.FAIL:
         identity_level = IdentityEvidenceLevel.CONFLICTING
-    technical_status, tech_findings = _technical_assessment(comparison_rows, policy, profile, assay)
+    findings = meta_findings + ref_findings + bam_findings + identity_findings
+    return metadata_status, identity_status, identity_level, findings
+
+
+def finalize_group_decision(
+    outcomes: list[DatasetOutcome],
+    policy: Policy,
+    metadata_status: CheckStatus,
+    identity_status: CheckStatus,
+    identity_level: IdentityEvidenceLevel,
+    component_findings: list[Finding],
+    technical_status: CheckStatus,
+    tech_findings: list[Finding],
+) -> tuple[GroupDecision, list[Finding]]:
+    """Assemble one group's decision from precomputed component results.
+
+    The pipeline computes components incrementally (streaming comparisons feed a
+    TechnicalAssessment); this function owns the fastp-evidence rule, the
+    aggregation precedence, and the GroupDecision.
+    """
+    group = outcomes[0].spec.pool_group
 
     # fastp evidence requirement (merged_short).
     if outcomes[0].spec.read_type.value == "merged_short" and policy.require_fastp_evidence:
@@ -1084,7 +1124,7 @@ def evaluate_group(
     else:
         overall = DecisionState.COMPATIBLE
 
-    all_findings = meta_findings + ref_findings + bam_findings + identity_findings + tech_findings
+    all_findings = component_findings + tech_findings
     assumptions: list[str] = []
     if identity_level is IdentityEvidenceLevel.DECLARED_ONLY:
         assumptions.append("identity_declared_not_verified")
@@ -1109,6 +1149,37 @@ def evaluate_group(
         reason_codes=reason_codes,
     )
     return decision, all_findings
+
+
+def evaluate_group(
+    outcomes: list[DatasetOutcome],
+    comparison_rows: list[dict[str, Any]],
+    policy: Policy,
+) -> tuple[GroupDecision, list[Finding]]:
+    """Evaluate one pooling group from its full comparison-row list.
+
+    Convenience wrapper over group_components + TechnicalAssessment +
+    finalize_group_decision for callers that hold the rows in memory (tests);
+    the pipeline streams instead.
+    """
+    profile = outcomes[0].spec.read_type.value
+    assay = outcomes[0].spec.assay
+    metadata_status, identity_status, identity_level, component_findings = group_components(
+        outcomes, policy
+    )
+    technical_status, tech_findings = _technical_assessment(
+        comparison_rows, policy, profile, assay
+    )
+    return finalize_group_decision(
+        outcomes,
+        policy,
+        metadata_status,
+        identity_status,
+        identity_level,
+        component_findings,
+        technical_status,
+        tech_findings,
+    )
 
 
 def assign_finding_ids(findings: list[Finding]) -> list[Finding]:

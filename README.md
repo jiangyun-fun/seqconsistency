@@ -501,6 +501,13 @@ removed and anything already published by this run is removed best-effort.
 - All-pairs comparisons are quadratic in dataset count; `--max-pairs` (default
   10,000) aborts the run **before** expensive processing when the configured pair
   count is exceeded. Pairs are never silently omitted.
+- The comparison stage streams: each pair's rows go straight into the staged
+  Parquet writers (comparisons and findings), the technical assessment aggregates
+  incrementally, and the optional HTML report retains only a bounded preview
+  (findings ≤ 200, comparison rows ≤ 500 — the same limits the page displays).
+  In-memory comparison state is one pair's rows plus one group's finding objects;
+  the Parquet outputs always carry every row. Metric rows are written as a
+  generator, never a whole-run list.
 - `--workers` = maximum simultaneous dataset scans (processes);
   `--threads` = total logical CPU budget. Deterministic resolution rule:
   `workers = min(--workers, --threads)`,

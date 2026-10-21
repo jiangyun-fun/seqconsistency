@@ -21,9 +21,15 @@ from typing import Any
 from seqconsistency import metrics as metrics_mod
 from seqconsistency import parquet_io as pio
 from seqconsistency.bam import scan_bam
-from seqconsistency.comparison import compare_group, count_total_pairs
+from seqconsistency.comparison import (
+    compare_pair,
+    count_total_pairs,
+    generate_pairs,
+    prepare_group,
+)
 from seqconsistency.errors import ConfigError, PathError, SeqConsistencyError
 from seqconsistency.fastq import parse_fastp_json, scan_fastq_paired, scan_fastq_single
+from seqconsistency.html_report import MAX_COMPARISONS, MAX_FINDINGS
 from seqconsistency.manifest import ManifestLoadResult, load_manifest
 from seqconsistency.models import (
     DatasetOutcome,
@@ -37,8 +43,9 @@ from seqconsistency.models import (
 from seqconsistency.policy import (
     Finding,
     Policy,
-    assign_finding_ids,
-    evaluate_group,
+    TechnicalAssessment,
+    finalize_group_decision,
+    group_components,
     load_policy,
 )
 from seqconsistency.reporting import build_provenance
@@ -270,34 +277,80 @@ def run_check(config: CheckConfig) -> int:
     scan_seconds = time.perf_counter() - started
 
     comparison_started = time.perf_counter()
-    all_comparison_rows: list[dict[str, Any]] = []
     decisions_rows: list[dict[str, Any]] = []
-    findings: list[Finding] = []
-    # Comparison rows stream into the staged writer per group: memory holds one
-    # group's rows (for decision evaluation), never all groups at once.
+    # Streaming stage (spec §5: memory scales with output batches, not totals):
+    # comparison rows and findings go straight into staged writers pair by pair.
+    # Retained in memory: one group's finding objects (needed to build the
+    # decision row; freed when the group completes) and bounded HTML previews.
     comparison_writer = pio.StagedWriter(config.comparisons_out, pio.COMPARISONS_SCHEMA)
+    findings_writer = pio.StagedWriter(config.findings_out, pio.FINDINGS_SCHEMA)
+    html_comparisons: list[dict[str, Any]] = []  # bounded preview for --report-out
+    html_findings: list[Finding] = []
+    comparisons_total = 0
+    findings_total = 0
+    finding_seq = 0
+
+    def _emit_finding(f: Finding) -> None:
+        nonlocal finding_seq, findings_total
+        finding_seq += 1
+        f.finding_id = f"F{finding_seq:04d}"
+        findings_writer.write_rows([f.to_row()])
+        findings_total += 1
+        if len(html_findings) < MAX_FINDINGS:
+            html_findings.append(f)
+
     try:
         for group in sorted(groups):
             members = [o for o in outcomes if o.spec.pool_group == group]
-            resolver = policy.resolver_for(members[0].spec.read_type.value, members[0].spec.assay)
-            rows = compare_group(
-                group,
+            profile = members[0].spec.read_type.value
+            assay = members[0].spec.assay
+            resolver = policy.resolver_for(profile, assay)
+            prepared = prepare_group(members)
+            by_id = {o.spec.dataset_id: o for o in members}
+            (
+                metadata_status,
+                identity_status,
+                identity_level,
+                component_findings,
+            ) = group_components(members, policy)
+            assessment = TechnicalAssessment(policy, profile, assay)
+            tech_findings: list[Finding] = []
+            for id_a, id_b in generate_pairs(list(by_id)):
+                pair_rows = compare_pair(
+                    group,
+                    by_id[id_a],
+                    by_id[id_b],
+                    policy.min_observations,
+                    resolver,
+                    require_fastp=policy.require_fastp_evidence,
+                    prepared=prepared,
+                )
+                comparison_writer.write_rows(pair_rows)
+                comparisons_total += len(pair_rows)
+                if config.report_out is not None and len(html_comparisons) < MAX_COMPARISONS:
+                    html_comparisons.extend(pair_rows[: MAX_COMPARISONS - len(html_comparisons)])
+                tech_findings.extend(assessment.feed(pair_rows))
+            technical_status, tail = assessment.finalize()
+            tech_findings.extend(tail)
+            decision, group_findings = finalize_group_decision(
                 members,
-                policy.min_observations,
-                resolver,
-                require_fastp=policy.require_fastp_evidence,
+                policy,
+                metadata_status,
+                identity_status,
+                identity_level,
+                component_findings,
+                technical_status,
+                tech_findings,
             )
-            comparison_writer.write_rows(rows)
-            if config.report_out is not None:
-                all_comparison_rows.extend(rows)
-            decision, group_findings = evaluate_group(members, rows, policy)
             decisions_rows.append(decision.to_row(policy))
-            findings.extend(group_findings)
+            for f in group_findings:
+                _emit_finding(f)
     except BaseException:
         comparison_writer.abort()
+        findings_writer.abort()
         raise
     for path, ga, gb in manifest.cross_group_file_reuse:
-        findings.append(
+        _emit_finding(
             Finding(
                 finding_id="",
                 pool_group=ga,
@@ -312,7 +365,6 @@ def run_check(config: CheckConfig) -> int:
                 recommended_action=("Confirm this reuse is intentional (e.g. a common control)."),
             )
         )
-    findings = assign_finding_ids(findings)
     comparison_seconds = time.perf_counter() - comparison_started
 
     # Serialize outputs: staged writes, published only after all computation
@@ -329,10 +381,11 @@ def run_check(config: CheckConfig) -> int:
                 *([config.report_out] if config.report_out else []),
             ]
         ) as published:
-            metrics_rows: list[dict[str, Any]] = []
-            for outcome in outcomes:
-                metrics_rows.extend(metrics_mod.metric_rows(outcome))
-            pio.write_table(config.metrics_out, pio.METRICS_SCHEMA, metrics_rows)
+            pio.write_table(
+                config.metrics_out,
+                pio.METRICS_SCHEMA,
+                (row for outcome in outcomes for row in metrics_mod.metric_rows(outcome)),
+            )
             published.append(config.metrics_out)
 
             dist_writer = pio.StagedWriter(config.distributions_out, pio.DISTRIBUTIONS_SCHEMA)
@@ -348,9 +401,7 @@ def run_check(config: CheckConfig) -> int:
 
             comparison_writer.close_publish()
             published.append(config.comparisons_out)
-            pio.write_table(
-                config.findings_out, pio.FINDINGS_SCHEMA, [f.to_row() for f in findings]
-            )
+            findings_writer.close_publish()
             published.append(config.findings_out)
             pio.write_table(config.decisions_out, pio.DECISIONS_SCHEMA, decisions_rows)
             published.append(config.decisions_out)
@@ -377,17 +428,20 @@ def run_check(config: CheckConfig) -> int:
 
                 html = render_html_report(
                     decisions_rows,
-                    findings,
-                    all_comparison_rows,
+                    html_findings,
+                    html_comparisons,
                     outcomes,
                     policy,
                     provenance,
+                    findings_total=findings_total,
+                    comparisons_total=comparisons_total,
                 )
                 _write_text_atomic(config.report_out, html)
                 published.append(config.report_out)
 
     except BaseException:
         comparison_writer.abort()  # no-op if already published
+        findings_writer.abort()
         raise
 
     any_not_compatible = any(d["overall_decision"] != "COMPATIBLE" for d in decisions_rows)

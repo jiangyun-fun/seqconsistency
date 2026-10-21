@@ -552,6 +552,13 @@ def _fastp_pair_rows(
     ]
 
 
+def prepare_group(outcomes: Sequence[DatasetOutcome]) -> dict[str, Any]:
+    """Per-dataset comparison inputs (sorted samples, JSD histograms), computed
+    once per group so the streaming pipeline can reuse them across pairs."""
+    definitions = applicable_definitions(outcomes[0])
+    return {o.spec.dataset_id: _prepare_dataset(o, definitions) for o in outcomes}
+
+
 def compare_pair(
     pool_group: str,
     a: DatasetOutcome,

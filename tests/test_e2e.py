@@ -583,3 +583,79 @@ def test_ont_bam_group_has_no_insert_size_requirement(tmp_path: Path):
     # Clipping summary rows exist.
     mets = pq.read_table(out["metrics"]).to_pylist()
     assert any(m["metric"] == "clipping" for m in mets)
+
+
+def test_large_group_streams_comparisons_and_report(tmp_path):
+    # Review round 2, point 6: 30 datasets -> 435 pairs x 12 rows = 5220
+    # comparison rows. The streaming stage must write every row to the
+    # comparisons Parquet while the HTML report keeps only a bounded preview;
+    # retained memory scales with output batches, not with pair counts.
+    import subprocess
+    import sys
+
+    from helpers import run_cli
+
+    files = [write_pe(tmp_path, f"d{i}", 60, seed=100 + i) for i in range(30)]
+    rows = [
+        {
+            "dataset_id": f"d{i}",
+            "pool_group": "g",
+            "sample_id": "s1",
+            "library_id": "l1",
+            "assay": "WGS",
+            "platform": "ILLUMINA",
+            "read_type": "paired_short",
+            "input_format": "fastq",
+            "path1": str(p1),
+            "path2": str(p2),
+            "processing_id": "p1",
+        }
+        for i, (p1, p2) in enumerate(files)
+    ]
+    manifest = write_tsv_manifest(tmp_path / "m.tsv", rows)
+    policy = write_policy(tmp_path / "p.yaml")
+    outdir = tmp_path / "run"
+    # Distinct seeds give some pairs a mean-quality distance past the 1.5 Phred
+    # test-policy maximum, so the deterministic outcome is REVIEW (exit 1).
+    result, out, _ = run_cli(outdir, manifest, policy, workers=2, expect_code=1)
+    comparisons = pq.read_table(out["comparisons"]).to_pylist()
+    assert len(comparisons) == 435 * 12
+    findings_rows = pq.read_table(out["findings"]).to_pylist()
+    assert findings_rows  # identity/assumption findings streamed out
+    ids = [f["finding_id"] for f in findings_rows]
+    assert ids == sorted(ids) and len(set(ids)) == len(ids)  # sequential, unique
+    report = outdir / "report.html"
+    r = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "seqconsistency.cli",
+            "check",
+            "--manifest",
+            str(manifest),
+            "--policy",
+            str(policy),
+            "--metrics-out",
+            str(out["metrics"]),
+            "--distributions-out",
+            str(out["distributions"]),
+            "--comparisons-out",
+            str(out["comparisons"]),
+            "--findings-out",
+            str(out["findings"]),
+            "--decisions-out",
+            str(out["decisions"]),
+            "--provenance-out",
+            str(outdir / "provenance2.json"),
+            "--report-out",
+            str(report),
+            "--overwrite",
+            "--workers",
+            "2",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert r.returncode == 1, r.stderr  # same REVIEW outcome as the first run
+    html_text = report.read_text()
+    assert f"Showing up to 500 rows of {435 * 12}" in html_text
