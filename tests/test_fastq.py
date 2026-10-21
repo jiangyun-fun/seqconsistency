@@ -316,3 +316,52 @@ def test_fastp_json_invalid_rejected(tmp_path: Path):
     p.write_text("{not json")
     with pytest.raises(InputDataError):
         parse_fastp_json(p)
+
+
+def test_uniform_high_quality_phred33_accepted(tmp_path: Path):
+    # Reviewer counterexample: every byte 'K' (uniform Q42). Not the classic
+    # Phred+64 signature under the tightened bound (max must be >= 90).
+    p = tmp_path / "hi.fastq"
+    p.write_bytes(b"@r1\nACGT\n+\nKKKK\n@r2\nACGT\n+\nKKKK\n")
+    stats, *_ = scan_fastq_single("ds", p, ReadType.HIFI, SAMPLING, 5)
+    assert stats.total_reads == 2
+
+
+def test_swapped_casava_mate_annotations_rejected(tmp_path: Path):
+    # R1 file carrying " 2:N:..." and R2 carrying " 1:N:..." must abort.
+    r1 = [(b"@inst:1 2:N:0:ACGT", b"ACGT", b"IIII")]
+    r2 = [(b"@inst:1 1:N:0:ACGT", b"ACGT", b"IIII")]
+    p1 = write_fastq(tmp_path / "a_R1.fastq", r1)
+    p2 = write_fastq(tmp_path / "a_R2.fastq", r2)
+    with pytest.raises(InputDataError, match="contradictory mate annotations"):
+        scan_fastq_paired("ds", p1, p2, ReadType.PAIRED_SHORT, SAMPLING, 5)
+
+
+def test_consistent_casava_annotations_accepted(tmp_path: Path):
+    n = 50
+    r1 = [(f"@inst{i} 1:N:0:ACGT".encode(), b"ACGT" * 25, b"I" * 100) for i in range(n)]
+    r2 = [(f"@inst{i} 2:N:0:ACGT".encode(), b"ACGT" * 25, b"I" * 100) for i in range(n)]
+    p1 = write_fastq(tmp_path / "c_R1.fastq", r1)
+    p2 = write_fastq(tmp_path / "c_R2.fastq", r2)
+    st1, st2, pairing, *_ = scan_fastq_paired("ds", p1, p2, ReadType.PAIRED_SHORT, SAMPLING, 20)
+    assert pairing.pairs_checked == n
+
+
+def test_self_contradictory_header_rejected(tmp_path: Path):
+    # /1 suffix plus CASAVA " 2:" on the SAME header contradicts itself.
+    p1 = tmp_path / "s_R1.fastq"
+    p2 = tmp_path / "s_R2.fastq"
+    write_fastq(p1, [(b"@r0/1 2:N:0:ACGT", b"ACGT", b"IIII")])
+    write_fastq(p2, [(b"@r0/2 2:N:0:ACGT", b"ACGT", b"IIII")])
+    with pytest.raises(InputDataError, match="contradictory mate annotations"):
+        scan_fastq_paired("ds", p1, p2, ReadType.PAIRED_SHORT, SAMPLING, 5)
+
+
+def test_mate_annotation_parses_casava():
+    assert mate_annotation(b"@r 1:N:0:ACGT") == b"/1"
+    assert mate_annotation(b"@r 2:N:0:ACGT") == b"/2"
+    assert mate_annotation(b"@r/1") == b"/1"
+    assert mate_annotation(b"@r/1 1:N:0:ACGT") == b"/1"  # agreeing sources are fine
+    assert mate_annotation(b"@r plain-comment") is None
+    with pytest.raises(InputDataError):
+        mate_annotation(b"@r/1 2:N:0:ACGT")

@@ -78,13 +78,31 @@ def test_policy_load_and_strictness():
     p = _policy()
     assert p.policy_id == "test-policy"
     assert p.min_observations == 10
-    assert not p.thresholds[0].calibrated
+    assert p.thresholds[0].calibrated  # test fixture marks thresholds calibrated
     with pytest.raises(ConfigError, match="unknown key"):
         _policy(MINIMAL_POLICY.replace("identity:", "identity:\n  bogus_key: 1\n"))
     with pytest.raises(ConfigError, match="missing required key"):
         _policy(MINIMAL_POLICY.replace('policy_version: "1"\n', ""))
-    with pytest.raises(ConfigError, match="must be a non-negative"):
+    with pytest.raises(ConfigError, match="must be a finite non-negative"):
         _policy(MINIMAL_POLICY.replace("max: 10.0", "max: -1.0"))
+    with pytest.raises(ConfigError, match="must be a finite non-negative"):
+        _policy(MINIMAL_POLICY.replace("max: 10.0", "max: .inf"))
+    with pytest.raises(ConfigError, match="expected a boolean"):
+        _policy(MINIMAL_POLICY.replace("calibrated: true", 'calibrated: "false"'))
+    with pytest.raises(ConfigError, match="unknown metric/method pair"):
+        _policy(MINIMAL_POLICY.replace("metric: read_length", "metric: read_len"))
+    with pytest.raises(ConfigError, match="unknown metric/method pair"):
+        _policy(MINIMAL_POLICY.replace("method: wasserstein1", "method: nonsense"))
+    with pytest.raises(ConfigError, match="expected a list of strings"):
+        _policy(MINIMAL_POLICY.replace("calibrated: true", "calibrated: true\n      profiles: ont"))
+    with pytest.raises(ConfigError, match="overlapping"):
+        _policy(
+            MINIMAL_POLICY.replace(
+                "    - metric: gc_content",
+                "    - metric: read_length\n      method: wasserstein1\n      max: 5.0\n"
+                "      action: review\n      calibrated: true\n    - metric: gc_content",
+            )
+        )
     with pytest.raises(ConfigError, match="expected one of"):
         _policy(MINIMAL_POLICY.replace("action: review", "action: explode"))
 
@@ -110,7 +128,8 @@ def test_all_pass_is_compatible():
     assert decision.identity_evidence_level is IdentityEvidenceLevel.DECLARED_ONLY
     assert any(IDENTITY_DECLARED_SENTENCE in f.message for f in findings)
     assert "identity_declared_not_verified" in decision.assumptions
-    assert "thresholds_illustrative_uncalibrated" in decision.assumptions
+    # The test fixture marks thresholds calibrated, so no uncalibrated assumption.
+    assert "thresholds_illustrative_uncalibrated" not in decision.assumptions
 
 
 def test_exceed_threshold_yields_review():
@@ -304,3 +323,118 @@ def test_finding_ids_deterministic():
     ids2 = [f.finding_id for f in assign_finding_ids(list(findings2))]
     assert ids1 == ids2
     assert len(set(ids1)) == len(ids1)
+
+
+def test_uncalibrated_threshold_prevents_automatic_approval():
+    # Spec §7: a threshold that is not calibrated must not automatically approve
+    # pooling. PASS rows against uncalibrated thresholds -> REVIEW + finding.
+    p = _policy(MINIMAL_POLICY.replace("calibrated: true", "calibrated: false"))
+    outcomes = [_outcome("a"), _outcome("b")]
+    row = dict(_row(STATUS_PASS), threshold_calibrated=False)
+    decision, findings = evaluate_group(outcomes, [row], p)
+    assert decision.overall_decision is DecisionState.REVIEW
+    assert any(f.reason_code == "TECH_THRESHOLD_UNCALIBRATED" for f in findings)
+    assert "thresholds_illustrative_uncalibrated" in decision.assumptions
+
+
+def test_calibrated_threshold_allows_approval():
+    p = _policy()
+    outcomes = [_outcome("a"), _outcome("b")]
+    row = dict(_row(STATUS_PASS), threshold_calibrated=True)
+    decision, findings = evaluate_group(outcomes, [row], p)
+    assert decision.overall_decision is DecisionState.COMPATIBLE
+    assert not any(f.reason_code == "TECH_THRESHOLD_UNCALIBRATED" for f in findings)
+
+
+def test_not_assessed_rows_block_nothing():
+    from seqconsistency.comparison import STATUS_NOT_ASSESSED
+
+    p = _policy()
+    outcomes = [_outcome("a"), _outcome("b")]
+    row = dict(
+        _row(STATUS_NOT_ASSESSED), value=None, threshold=None, reason_code="FASTP_EVIDENCE_OPTIONAL"
+    )
+    decision, _ = evaluate_group(outcomes, [row], p)
+    assert decision.overall_decision is DecisionState.COMPATIBLE
+
+
+def test_bam_conflicting_sm_values_are_identity_conflict():
+    from seqconsistency.policy import _bam_sample_metadata_findings
+
+    a = _outcome("a", read_type="paired_short", input_format="bam")
+    b = _outcome("b", read_type="paired_short", input_format="bam")
+    from seqconsistency.models import BamFlagCounts, BamHeaderInfo, BamScanResult
+
+    for o, sm in zip((a, b), ("sampleA", "sampleB"), strict=True):
+        o.bam = BamScanResult(
+            dataset_id=o.spec.dataset_id,
+            flags=BamFlagCounts(),
+            header=BamHeaderInfo("coordinate", [("chr1", 1000, None)], [{"ID": "rg1", "SM": sm}]),
+            eligible_observations=10,
+            total_bases=100,
+            mapq_hist=None,
+            insert_hist=None,
+            length_hist=None,
+            sample_reads={},
+            sampled_count=0,
+            scan_seconds=0.0,
+            records_read=10,
+        )
+    id_status, md_status, findings = _bam_sample_metadata_findings([a, b])
+    assert id_status is CheckStatus.FAIL
+    assert any(f.reason_code == "BAM_SAMPLE_METADATA_CONFLICT" for f in findings)
+
+
+def test_bam_sm_mismatching_manifest_is_review():
+    from seqconsistency.models import BamFlagCounts, BamHeaderInfo, BamScanResult
+    from seqconsistency.policy import _bam_sample_metadata_findings
+
+    a = _outcome("a", read_type="paired_short", input_format="bam", sample="declared_sample")
+    b = _outcome("b", read_type="paired_short", input_format="bam", sample="declared_sample")
+    for o in (a, b):
+        o.bam = BamScanResult(
+            dataset_id=o.spec.dataset_id,
+            flags=BamFlagCounts(),
+            header=BamHeaderInfo(
+                "coordinate", [("chr1", 1000, None)], [{"ID": "rg1", "SM": "header_sample"}]
+            ),
+            eligible_observations=10,
+            total_bases=100,
+            mapq_hist=None,
+            insert_hist=None,
+            length_hist=None,
+            sample_reads={},
+            sampled_count=0,
+            scan_seconds=0.0,
+            records_read=10,
+        )
+    id_status, md_status, findings = _bam_sample_metadata_findings([a, b])
+    assert id_status is CheckStatus.PASS
+    assert md_status is CheckStatus.REVIEW
+    assert any(f.reason_code == "BAM_SM_MISMATCHES_MANIFEST" for f in findings)
+
+
+def test_bam_undefined_rg_records_reported():
+    from seqconsistency.models import BamFlagCounts, BamHeaderInfo, BamScanResult
+    from seqconsistency.policy import _bam_sample_metadata_findings
+
+    a = _outcome("a", read_type="paired_short", input_format="bam")
+    flags = BamFlagCounts()
+    flags.records_with_undefined_rg = 5
+    a.bam = BamScanResult(
+        dataset_id="a",
+        flags=flags,
+        header=BamHeaderInfo("coordinate", [("chr1", 1000, None)], []),
+        eligible_observations=10,
+        total_bases=100,
+        mapq_hist=None,
+        insert_hist=None,
+        length_hist=None,
+        sample_reads={},
+        sampled_count=0,
+        scan_seconds=0.0,
+        records_read=10,
+    )
+    id_status, md_status, findings = _bam_sample_metadata_findings([a])
+    assert md_status is CheckStatus.REVIEW
+    assert any(f.reason_code == "BAM_UNDEFINED_RG_RECORDS" for f in findings)

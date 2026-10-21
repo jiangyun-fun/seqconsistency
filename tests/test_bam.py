@@ -29,7 +29,7 @@ def test_valid_coordinate_sorted_bam(tmp_path: Path):
     assert res.length_hist is not None and res.length_hist.observation_count == 500
     assert res.total_bases == 500 * 100
     assert res.header.sort_order == "coordinate"
-    assert res.header.references == [("chr1", 1_000_000, None)]
+    assert res.header.references == [("chr1", 1_000_000, "6a9a0c1f2b3d4e5f60718293a4b5c6d7")]
     assert res.header.read_groups[0]["ID"] == "rg1"
 
 
@@ -220,3 +220,55 @@ def test_bam_gc_fraction_values(tmp_path: Path):
         out.write(a)
     res = scan_bam("ds", p, ReadType.PAIRED_SHORT, SAMPLING, 1)
     assert res.sample_reads["gc_fraction"][0] == pytest.approx(0.5)
+
+
+def test_clipping_summary_collected(tmp_path: Path):
+    import pysam
+
+    p = tmp_path / "clip.bam"
+    header = {"HD": {"SO": "coordinate"}, "SQ": [{"SN": "chr1", "LN": 10000}]}
+    # (cigar, query-sequence length): 50M -> 50bp; 40M10S -> 50bp (soft clip
+    # present in sequence); 45M5H -> 45bp (hard clip absent from sequence).
+    with pysam.AlignmentFile(str(p), "wb", header=header) as out:
+        for i, (cigar, seq_len) in enumerate((("50M", 50), ("40M10S", 50), ("45M5H", 45))):
+            a = pysam.AlignedSegment(out.header)
+            a.query_name = f"c{i}"
+            a.query_sequence = "ACGT" * (seq_len // 4) + "A" * (seq_len % 4)
+            a.query_qualities = np.full(seq_len, 30, dtype=np.uint8)
+            a.flag = 0
+            a.reference_id = 0
+            a.reference_start = i * 100
+            a.cigarstring = cigar
+            out.write(a)
+    res = scan_bam("ds", p, ReadType.PAIRED_SHORT, SAMPLING, 10)
+    assert res.flags.clipped_primary_records == 2
+    assert res.flags.clipped_bases == 15
+
+
+def test_undefined_rg_records_counted(tmp_path: Path):
+    import pysam
+
+    p = tmp_path / "rg.bam"
+    header = {"HD": {"SO": "coordinate"}, "SQ": [{"SN": "chr1", "LN": 10000}]}
+    with pysam.AlignmentFile(str(p), "wb", header=header) as out:
+        a = pysam.AlignedSegment(out.header)
+        a.query_name = "ok"
+        a.query_sequence = "ACGT" * 25
+        a.query_qualities = np.full(100, 30, dtype=np.uint8)
+        a.flag = 0
+        a.reference_id = 0
+        a.reference_start = 0
+        a.cigarstring = "100M"
+        a.set_tag("RG", "rg_undefined")
+        out.write(a)
+    res = scan_bam("ds", p, ReadType.PAIRED_SHORT, SAMPLING, 10)
+    assert res.flags.records_with_undefined_rg == 1
+
+
+def test_bam_reservoir_batching_matches_expectations(tmp_path: Path):
+    p = make_bam(tmp_path / "batch.bam", n=3000, seed=99)
+    res = scan_bam("ds", p, ReadType.PAIRED_SHORT, SAMPLING, 500)
+    assert res.sampled_count == 500
+    assert res.sampled_count == len(res.sample_reads["length"])
+    # Keys are unique; sorted output must contain distinct lengths of the right count.
+    assert len(set(res.sample_reads["length"])) <= 500

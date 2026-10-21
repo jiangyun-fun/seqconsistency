@@ -102,7 +102,7 @@ def make_bam(
 
     header = {
         "HD": {"SO": sort_header},
-        "SQ": [{"SN": "chr1", "LN": contig_len}],
+        "SQ": [{"SN": "chr1", "LN": contig_len, "M5": "6a9a0c1f2b3d4e5f60718293a4b5c6d7"}],
         "RG": [{"ID": "rg1", "SM": "sample1", "LB": "lib1", "PL": "ILLUMINA"}],
     }
     if extra_header:
@@ -232,47 +232,52 @@ technical:
       method: wasserstein1
       max: 10.0
       action: review
-      calibrated: false
+      calibrated: true
     - metric: mean_read_quality
       method: wasserstein1
       max: 1.5
       action: review
-      calibrated: false
+      calibrated: true
     - metric: gc_content
       method: jensenshannon_base2
       max: 0.10
       action: review
-      calibrated: false
+      calibrated: true
     - metric: n_content
       method: jensenshannon_base2
       max: 0.10
       action: review
-      calibrated: false
+      calibrated: true
     - metric: base_quality
       method: jensenshannon_base2
       max: 0.10
       action: review
-      calibrated: false
+      calibrated: true
     - metric: nucleotide_composition
       method: jensenshannon_base2
       max: 0.10
       action: review
-      calibrated: false
+      calibrated: true
     - metric: mapq
       method: jensenshannon_base2
       max: 0.10
       action: review
-      calibrated: false
+      calibrated: true
     - metric: insert_size
       method: wasserstein1
       max: 25.0
       action: review
-      calibrated: false
+      calibrated: true
     - metric: merge_retained_fraction
       method: absolute_difference
       max: 0.1
       action: review
-      calibrated: false
+      calibrated: true
+    - metric: merge_rate
+      method: absolute_difference
+      max: 0.1
+      action: review
+      calibrated: true
 """
 
 

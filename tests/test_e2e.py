@@ -205,12 +205,9 @@ def test_merged_short_group_end_to_end(tmp_path: Path):
     result, out, _ = run_cli(tmp_path / "run", manifest, policy, expect_code=1)
     decisions = pq.read_table(out["decisions"]).to_pylist()
     assert decisions[0]["overall_decision"] in ("REVIEW", "INSUFFICIENT_EVIDENCE")
-    # merge-rate comparison reported missing fastp evidence.
+    # fastp evidence absent and not required: NOT_ASSESSED, never blocking.
     comparisons = pq.read_table(out["comparisons"]).to_pylist()
-    assert any(
-        r["metric"] == "merge_retained_fraction" and r["status"] == "MISSING_EVIDENCE"
-        for r in comparisons
-    )
+    assert any(r["metric"] == "merge_rate" and r["status"] == "NOT_ASSESSED" for r in comparisons)
 
 
 def test_long_read_group_end_to_end(tmp_path: Path):
@@ -475,3 +472,40 @@ def test_overwrite_flag_allows_rerun(tmp_path: Path):
         text=True,
     )
     assert r2.returncode == 0, r2.stderr
+
+
+def test_ont_bam_group_has_no_insert_size_requirement(tmp_path: Path):
+    from helpers import run_cli
+
+    # make_bam declares RG SM=sample1; the manifest agrees, so no SM finding.
+    b1 = make_bam(tmp_path / "o1.bam", n=3000, seed=140, paired=False)
+    b2 = make_bam(tmp_path / "o2.bam", n=3000, seed=141, paired=False)
+    rows = [
+        {
+            "dataset_id": f"o{i}",
+            "pool_group": "g",
+            "sample_id": "sample1",
+            "library_id": "l",
+            "assay": "WGS",
+            "platform": "ONT",
+            "read_type": "ont",
+            "input_format": "bam",
+            "path1": str(p),
+            "processing_id": "p",
+        }
+        for i, p in enumerate((b1, b2))
+    ]
+    manifest = write_tsv_manifest(tmp_path / "m.tsv", rows)
+    policy = write_policy(tmp_path / "p.yaml")
+    result, out, _ = run_cli(tmp_path / "run", manifest, policy, expect_code=0)
+    comparisons = pq.read_table(out["comparisons"]).to_pylist()
+    metrics = {r["metric"] for r in comparisons}
+    assert "insert_size" not in metrics  # unpaired layout: not applicable
+    statuses = {r["status"] for r in comparisons}
+    assert "INSUFFICIENT_OBSERVATIONS" not in statuses
+    # Joint length/quality summary rows exist for the BAM sample.
+    dists = pq.read_table(out["distributions"]).to_pylist()
+    assert any(r["metric"] == "joint_length_quality" for r in dists)
+    # Clipping summary rows exist.
+    mets = pq.read_table(out["metrics"]).to_pylist()
+    assert any(m["metric"] == "clipping" for m in mets)

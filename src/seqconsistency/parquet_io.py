@@ -91,6 +91,7 @@ COMPARISONS_SCHEMA = pa.schema(
         ("unit", pa.string()),
         ("threshold", pa.float64()),
         ("threshold_direction", pa.string()),
+        ("threshold_calibrated", pa.bool_()),
         ("status", pa.string()),
         ("observations_a", pa.int64()),
         ("observations_b", pa.int64()),
@@ -99,7 +100,8 @@ COMPARISONS_SCHEMA = pa.schema(
     ],
     metadata=_md(
         "comparisons: one row per dataset pair (lexicographic order), stratum, and "
-        "metric; dataset_a < dataset_b always"
+        "metric; dataset_a < dataset_b always; threshold_calibrated is null when no "
+        "threshold applied — a PASS on an uncalibrated threshold never approves"
     ),
 )
 
@@ -177,14 +179,19 @@ class StagedWriter:
         return self._rows_written
 
     def abort(self) -> None:
-        """Close and delete the staged file without publishing."""
+        """Close and delete the staged file without publishing.
+
+        Idempotent and never raises: after ``close_publish`` the staged path no
+        longer exists, and closing an already-closed writer is harmless to ignore.
+        """
         try:
             self._writer.close()
-        finally:
-            try:
-                self.staged_path.unlink(missing_ok=True)
-            except OSError:
-                pass
+        except Exception:  # noqa: BLE001 — cleanup must not mask the real error
+            pass
+        try:
+            self.staged_path.unlink(missing_ok=True)
+        except OSError:
+            pass
 
     @property
     def rows_written(self) -> int:

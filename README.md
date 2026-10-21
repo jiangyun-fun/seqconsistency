@@ -53,7 +53,7 @@ Every persistent output has its own explicit CLI path. There is no
 Outputs whose parent directory does not exist are rejected (directories are never
 created implicitly); existing outputs are rejected unless `--overwrite` is passed;
 duplicate output paths (including resolved aliases such as symlinks) and outputs
-colliding with input files are rejected. Writes are staged to temporary sibling files
+colliding with input files are rejected. Collision protection covers **every consumed input** — the manifest, the policy file, all `path1`/`path2` data files, and fastp reports — so `--overwrite` can never destroy an input. Writes are staged to temporary sibling files
 and published with `os.replace` only after all computation succeeded. Publication
 across multiple independent filesystem paths is **not transactional** — on failure the
 run removes what it published, but a crash between renames can leave a partial set.
@@ -103,7 +103,13 @@ establish **declared** identity only.
 ## Policy (YAML)
 
 See [`policies/example-illustrative.yaml`](policies/example-illustrative.yaml). Strictly
-validated: unknown keys are rejected, never silently ignored. Top-level sections:
+validated: unknown keys are rejected, never silently ignored; booleans must be real
+YAML booleans (`calibrated: "false"` is rejected — string coercion would silently
+flip it to true); threshold `max` must be finite and non-negative; every
+`(metric, method)` pair must be one this version implements (typos fail at load,
+not silently never-match); scope selectors must be string lists; and two rules for
+the same metric with overlapping profile/stratum/assay scopes are rejected
+(repeating a metric across disjoint profile scopes is fine). Top-level sections:
 
 ```yaml
 policy_id: my-policy
@@ -133,11 +139,22 @@ technical:
 ```
 
 **The shipped thresholds are ILLUSTRATIVE AND UNCALIBRATED.** They demonstrate
-mechanics only and are never described as validated. A metric without a threshold is
-reported but does not approve pooling: with `require_thresholds: true` (default) any
-applicable metric lacking a threshold blocks `COMPATIBLE` with a
-`TECH_NO_THRESHOLD_CONFIGURED` finding; setting it `false` records an info finding
-instead and lets configured thresholds carry the decision (an explicit opt-out).
+mechanics only and are never described as validated. Per the specification ("if no
+threshold is configured **or calibrated**, report the metric but do not use it to
+automatically approve pooling"):
+
+1. A metric with **no threshold** is reported but never approves: with
+   `require_thresholds: true` (default) it blocks `COMPATIBLE`
+   (`TECH_NO_THRESHOLD_CONFIGURED`, group `INSUFFICIENT_EVIDENCE`).
+2. A **PASS against a `calibrated: false` threshold** is reported with
+   `threshold_calibrated=false` in the comparisons table and withholds automatic
+   approval: the group falls to `REVIEW` with a `TECH_THRESHOLD_UNCALIBRATED`
+   finding. The distances were assessed; only the verdict is untrusted — so this is
+   a REVIEW, not INSUFFICIENT_EVIDENCE. An **EXCEED** stands regardless of
+   calibration: a measured distance above its maximum is real evidence of a shift.
+3. Consequently the shipped example policy can never yield `COMPATIBLE` — by
+   design. Calibrate thresholds against genuine between-run data and mark them
+   `calibrated: true` to enable automatic approval.
 
 ### Threshold calibration
 
@@ -174,17 +191,23 @@ biological validation from synthetic software tests.
   abort), quality bytes within ASCII `[33, 126]`.
 - **Quality encoding: Phred+33 only.** ASCII quality ranges alone cannot always
   unambiguously distinguish Phred+33 from Phred+64. Bytes outside `[33, 126]` abort
-  (provably not Phred+33). Additionally, a file whose full-file minimum quality byte
-  is ≥ 64 (`@`) **and** maximum ≥ 75 (`K`) is rejected as likely Phred+64: under
-  Phred+33 that would mean every base ≥ Q31 with some > Q41, which Illumina
-  instruments do not emit. Files with any low-quality base (byte < 64) are
-  unambiguous Phred+33 and accepted.
+  (provably not Phred+33). A file is additionally rejected as carrying the classic
+  Phred+64 signature when its full-file minimum quality byte is ≥ 64 (`@`) **and**
+  maximum ≥ 90 (`Z`): under Phred+33 that means every base ≥ Q31 with some > Q57,
+  which no platform emits, while under Phred+64 it means Q26, which is routine.
+  Uniform high-quality Phred+33 files (for example every byte `K`, uniform Q42)
+  are accepted. Files with any low-quality base (byte < 64) are unambiguous
+  Phred+33 and accepted.
 - **Paired-end synchronization** compares corresponding records — not just counts.
   Read names are normalized by taking the first whitespace-delimited token and
   removing a trailing `/1` or `/2` (covering legacy suffixes and Illumina/CASAVA
   `name 1:N:0:INDEX` comments). Arbitrary substrings are never stripped to force
-  synchronization. The first mismatched pair, contradictory mate annotation (R1
-  carrying `/2` or R2 carrying `/1`), or unequal mate counts aborts the run.
+  synchronization. Mate annotations are recognized from **both** the legacy
+  `/1`/`/2` suffix and the CASAVA comment mate number; the run aborts on the first
+  mismatched pair, on contradictory annotations (the R1 file carrying a mate-2
+  annotation or the R2 file a mate-1 annotation — from suffix or CASAVA comment),
+  on a header whose suffix and CASAVA comment disagree with each other, or on
+  unequal mate counts.
 - PE sampling unit is the **mate pair**: R1 and R2 features of one pair always come
   from the same pair.
 - R1 and R2 metrics are computed separately and compared R1-vs-R1, R2-vs-R2. R1 and R2
@@ -207,7 +230,9 @@ biological validation from synthetic software tests.
   first-in-pair, TLEN > 0. This never builds a mate dictionary. Documented
   limitation: pairs without the proper-pair flag or with TLEN ≤ 0 are excluded, so
   insert-size observations can undercount pairs in libraries with many discordant
-  mates; the observation count is reported.
+  mates; the observation count is reported. Insert-size comparison applies only
+  to the `paired_short` profile — unpaired and long-read BAMs get no insert-size
+  requirement (inapplicable evidence must never block).
 - Reference dictionaries are compared within a group: contig names, lengths, and
   order must match (mismatch ⇒ `INCOMPATIBLE` finding); `M5` checksums are compared
   when present on both sides (conflict ⇒ `INCOMPATIBLE`); when checksums are absent
@@ -215,6 +240,14 @@ biological validation from synthetic software tests.
   lengths do not prove sequence identity.
 - Read-group IDs may legitimately differ across runs; an ID **redefined
   differently** in two datasets is a `BAM_READ_GROUP_COLLISION` incompatibility.
+- Header sample metadata is reconciled with the manifest: several distinct
+  non-empty `SM` values across a group is a declared-identity conflict
+  (`BAM_SAMPLE_METADATA_CONFLICT` ⇒ `INCOMPATIBLE`); one `SM` contradicting the
+  manifest `sample_id` is a `BAM_SM_MISMATCHES_MANIFEST` review finding. Records
+  referencing read-group IDs missing from the header are counted full-scan and
+  reported (`BAM_UNDEFINED_RG_RECORDS`) — merge tools drop or misattribute them.
+- Clipping summaries are collected full-scan on primary records: soft+hard clipped
+  bases per read and the clipped-record fraction.
 - Duplicate-marked fractions depend entirely on upstream processing; they are never
   interpreted as independently measured PCR duplication rates.
 - Per-read GC/N/mean-quality histograms and quality comparisons for BAM come from the
@@ -264,7 +297,18 @@ count under a recognized key**. A merged FASTQ alone never implies a merge rate
 (merged-read distributions carry strong selection bias and are never interpreted as
 raw R1/R2 distributions). `fastp --include_unmerged` changes output composition and
 must be represented through `processing_id`. fastp schemas vary by version; missing
-fields stay null.
+fields stay null. Pairwise processing comparison prefers **`merge_rate`**
+(merged/before — isolates merging) when both reports carry merged-read counts, and
+falls back to **`merge_retained_fraction`** (after/before — conflates filtering and
+merging; the name says so). When fastp evidence is absent it is `NOT_ASSESSED`
+unless the policy sets `require_fastp_evidence: true`, in which case it is
+`MISSING_EVIDENCE` — optional evidence never blocks compatibility.
+
+A joint read-length × mean-quality summary (spec §6.1) is computed from each
+dataset's sample: 16 length bins (short profiles: 64 bp bins to 1024; long reads:
+a log-style ladder) × 13 quality bins of 8 Phred, emitted as
+`joint_length_quality` distribution rows (`bin_index` = length bin, `category` =
+`q00`..`q12`).
 
 ## Sampling
 
@@ -468,14 +512,21 @@ script (`examples/make_examples.py`) that writes synthetic FASTQ/BAM inputs,
 manifests, and policies for the scenarios below:
 
 1. Multiple Illumina PE runs of one library → `examples/01_paired_short/`
+   (REVIEW — the example policy's thresholds are uncalibrated, so approval is
+   withheld with `TECH_THRESHOLD_UNCALIBRATED` findings)
 2. Merged-read FASTQ datasets (`merged_short`) → `examples/02_merged_short/`
 3. ONT / HiFi long-read datasets → `examples/03_ont/`
 4. Coordinate-sorted BAM datasets → `examples/04_bam/`
-5. Shifted GC content producing a REVIEW finding → `examples/05_shifted_gc/`
+5. Shifted GC content producing an exceed finding → `examples/05_shifted_gc/`
 6. Genuine technical incompatibility (mixed samples) → `examples/06_incompatible/`
+   (INCOMPATIBLE — hard failure outranks the uncalibrated REVIEW)
 7. Missing identity evidence → INSUFFICIENT_EVIDENCE (policy requiring independent
    verification) → `examples/07_insufficient_identity/`
 8. Multiple pooling groups in one invocation → `examples/08_multi_group/`
+
+With the shipped uncalibrated policy, scenarios 1–5 and 8 end in `REVIEW`; a
+`COMPATIBLE` outcome requires thresholds marked `calibrated: true` after genuine
+calibration.
 
 ```bash
 python examples/make_examples.py --out-dir /tmp/seqc-examples

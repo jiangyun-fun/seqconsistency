@@ -59,6 +59,60 @@ INSERT_EDGES = [float(i) for i in range(0, 20001, 10)]
 #: Per-read mean quality histogram: bins of 1 Phred over [0, 94].
 MEANQ_EDGES = [float(q) for q in range(95)]
 
+#: Joint read-length x mean-quality summary (spec §6.1), computed on the sample.
+#: Length: 16 bins (short profiles: 64 bp bins to 1024; long: log2-style ladder).
+#: Quality: 13 bins of 8 Phred over [0, 104]. Same bin conventions as elsewhere:
+#: bin i is [start, end), final bin closed right, overflow excluded (rows carry
+#: observation counts so exclusions are visible).
+JOINT_SHORT_LEN_EDGES = [float(i) for i in range(0, 1025, 64)]
+JOINT_LONG_LEN_EDGES = [
+    0.0,
+    100.0,
+    200.0,
+    400.0,
+    800.0,
+    1600.0,
+    3200.0,
+    6400.0,
+    12800.0,
+    25600.0,
+    51200.0,
+    102400.0,
+    204800.0,
+    409600.0,
+    819200.0,
+    1048576.0,
+    2097152.0,
+]
+JOINT_QUAL_EDGES = [float(q) for q in range(0, 105, 8)]
+
+
+def joint_bin_counts(
+    lengths: np.ndarray | Sequence[float],
+    qualities: np.ndarray | Sequence[float],
+    length_edges: list[float],
+) -> tuple[np.ndarray, int]:
+    """2-D counts (n_len_bins, n_qual_bins) over finite (length, quality) pairs.
+
+    Returns (counts, n_finite_pairs); non-finite values on either axis are
+    excluded pairwise.
+    """
+    la = np.asarray(lengths, dtype=np.float64)
+    qa = np.asarray(qualities, dtype=np.float64)
+    ok = np.isfinite(la) & np.isfinite(qa)
+    n_len = len(length_edges) - 1
+    n_qual = len(JOINT_QUAL_EDGES) - 1
+    counts = np.zeros((n_len, n_qual), dtype=np.int64)
+    if not ok.any():
+        return counts, 0
+    li = np.searchsorted(length_edges, la[ok], side="right") - 1
+    li[la[ok] == length_edges[-1]] = n_len - 1  # final bin closed right
+    qi = np.searchsorted(JOINT_QUAL_EDGES, qa[ok], side="right") - 1
+    qi[qa[ok] == JOINT_QUAL_EDGES[-1]] = n_qual - 1
+    in_range = (li >= 0) & (li < n_len) & (qi >= 0) & (qi < n_qual)
+    flat = np.bincount(li[in_range] * n_qual + qi[in_range], minlength=n_len * n_qual)
+    return flat.reshape(n_len, n_qual), int(ok.sum())
+
 
 def bin_values(values: np.ndarray, edges: list[float]) -> tuple[list[int], int, int]:
     """Histogram ``values`` into ``edges``; return (counts, overflow, underflow).

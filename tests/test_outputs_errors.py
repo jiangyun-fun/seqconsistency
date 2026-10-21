@@ -269,3 +269,64 @@ def test_worker_exception_propagates_and_cleans_up(tmp_path):
         assert not path.exists(), f"partial output left behind: {path}"
     assert not (tmp / "prov.json").exists()
     assert not list(tmp.glob(".*tmp*")), "staged temporaries leaked"
+
+
+def test_output_colliding_with_manifest_rejected_even_with_overwrite(tmp_path: Path):
+    manifest, policy = _inputs(tmp_path)
+    config = _config(
+        tmp_path,
+        manifest=manifest,
+        policy=policy,
+        metrics_out=manifest,
+        overwrite=True,
+    )
+    with pytest.raises(PathError, match="collides with an input file"):
+        validate_output_paths(config, [manifest, policy])
+
+
+def test_output_colliding_with_policy_rejected(tmp_path: Path):
+    manifest, policy = _inputs(tmp_path)
+    config = _config(tmp_path, manifest=manifest, policy=policy, findings_out=policy)
+    with pytest.raises(PathError, match="collides with an input file"):
+        validate_output_paths(config, [manifest, policy])
+
+
+def test_output_colliding_with_fastp_report_rejected(tmp_path: Path):
+    import json
+
+    fastp = tmp_path / "report.json"
+    fastp.write_text(json.dumps({"summary": {}}))
+    p1, p2 = write_pe(tmp_path, "x", 10, seed=9)
+    manifest = write_tsv_manifest(
+        tmp_path / "m.tsv",
+        [
+            {
+                "dataset_id": "a",
+                "pool_group": "g",
+                "sample_id": "s",
+                "library_id": "l",
+                "assay": "WGS",
+                "platform": "I",
+                "read_type": "merged_short",
+                "input_format": "fastq",
+                "path1": str(p1),
+                "fastp_json": str(fastp),
+            },
+            {
+                "dataset_id": "b",
+                "pool_group": "g",
+                "sample_id": "s",
+                "library_id": "l",
+                "assay": "WGS",
+                "platform": "I",
+                "read_type": "merged_short",
+                "input_format": "fastq",
+                "path1": str(p2),
+                "fastp_json": str(fastp),
+            },
+        ],
+    )
+    policy = write_policy(tmp_path / "p.yaml")
+    config = _config(tmp_path, manifest=manifest, policy=policy, metrics_out=fastp)
+    with pytest.raises(PathError, match="collides with an input file"):
+        validate_output_paths(config, [manifest, policy, fastp])

@@ -8,13 +8,13 @@ author: "Yun Jiang"
 1. M: Phase 2 candidates in priority order: sourmash sequence-content comparison,
    reference-aware coverage comparison, processing-aware merged-read checks.
 2. M: Recalibrate example thresholds with genuine between-run data before any
-   production use.
-3. L: Profile pysam BAM iteration; consider a native reader only with measured
-   justification.
+   production use (uncalibrated thresholds now withhold approval by design).
+3. L: Profile pysam BAM iteration after the reservoir fix; the remaining
+   per-record cost is now the dominant term again.
 
 ## recommendation
 
 1. M: Treat COMPATIBLE results as technical assessments only; genotype-based
    identity verification (Phase 3) remains necessary for biological claims.
-2. L: Keep `--sample-size` at or above the largest compared feature cost when
-   comparing long-read lengths (Wasserstein precision depends on sample size).
+2. L: When calibrating, record the calibration dataset provenance next to the
+   policy so `calibrated: true` claims stay auditable.

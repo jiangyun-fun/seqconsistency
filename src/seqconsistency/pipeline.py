@@ -234,7 +234,15 @@ def run_check(config: CheckConfig) -> int:
     started = time.perf_counter()
     manifest: ManifestLoadResult = load_manifest(config.manifest)
     policy: Policy = load_policy(config.policy)
-    input_paths = [p for spec in manifest.specs for p in (spec.path1, spec.path2) if p is not None]
+    # Every consumed input is protected: the manifest, the policy, and all data
+    # files (including optional fastp reports) — an output must never replace
+    # any of them, --overwrite or not.
+    input_paths = [
+        config.manifest,
+        config.policy,
+        *[p for spec in manifest.specs for p in (spec.path1, spec.path2) if p is not None],
+        *[spec.fastp_json for spec in manifest.specs if spec.fastp_json is not None],
+    ]
     validate_output_paths(config, input_paths)
 
     groups: dict[str, list[DatasetSpec]] = {}
@@ -265,14 +273,29 @@ def run_check(config: CheckConfig) -> int:
     all_comparison_rows: list[dict[str, Any]] = []
     decisions_rows: list[dict[str, Any]] = []
     findings: list[Finding] = []
-    for group in sorted(groups):
-        members = [o for o in outcomes if o.spec.pool_group == group]
-        resolver = policy.resolver_for(members[0].spec.read_type.value, members[0].spec.assay)
-        rows = compare_group(group, members, policy.min_observations, resolver)
-        all_comparison_rows.extend(rows)
-        decision, group_findings = evaluate_group(members, rows, policy)
-        decisions_rows.append(decision.to_row(policy))
-        findings.extend(group_findings)
+    # Comparison rows stream into the staged writer per group: memory holds one
+    # group's rows (for decision evaluation), never all groups at once.
+    comparison_writer = pio.StagedWriter(config.comparisons_out, pio.COMPARISONS_SCHEMA)
+    try:
+        for group in sorted(groups):
+            members = [o for o in outcomes if o.spec.pool_group == group]
+            resolver = policy.resolver_for(members[0].spec.read_type.value, members[0].spec.assay)
+            rows = compare_group(
+                group,
+                members,
+                policy.min_observations,
+                resolver,
+                require_fastp=policy.require_fastp_evidence,
+            )
+            comparison_writer.write_rows(rows)
+            if config.report_out is not None:
+                all_comparison_rows.extend(rows)
+            decision, group_findings = evaluate_group(members, rows, policy)
+            decisions_rows.append(decision.to_row(policy))
+            findings.extend(group_findings)
+    except BaseException:
+        comparison_writer.abort()
+        raise
     for path, ga, gb in manifest.cross_group_file_reuse:
         findings.append(
             Finding(
@@ -294,71 +317,78 @@ def run_check(config: CheckConfig) -> int:
 
     # Serialize outputs: staged writes, published only after all computation
     # succeeded. Multi-path publication is not transactional (README § Outputs).
-    with pio.output_transaction(
-        [
-            config.metrics_out,
-            config.distributions_out,
-            config.comparisons_out,
-            config.findings_out,
-            config.decisions_out,
-            config.provenance_out,
-            *([config.report_out] if config.report_out else []),
-        ]
-    ) as published:
-        metrics_rows: list[dict[str, Any]] = []
-        for outcome in outcomes:
-            metrics_rows.extend(metrics_mod.metric_rows(outcome))
-        pio.write_table(config.metrics_out, pio.METRICS_SCHEMA, metrics_rows)
-        published.append(config.metrics_out)
+    try:
+        with pio.output_transaction(
+            [
+                config.metrics_out,
+                config.distributions_out,
+                config.comparisons_out,
+                config.findings_out,
+                config.decisions_out,
+                config.provenance_out,
+                *([config.report_out] if config.report_out else []),
+            ]
+        ) as published:
+            metrics_rows: list[dict[str, Any]] = []
+            for outcome in outcomes:
+                metrics_rows.extend(metrics_mod.metric_rows(outcome))
+            pio.write_table(config.metrics_out, pio.METRICS_SCHEMA, metrics_rows)
+            published.append(config.metrics_out)
 
-        dist_writer = pio.StagedWriter(config.distributions_out, pio.DISTRIBUTIONS_SCHEMA)
-        try:
-            dist_writer.write_rows(
-                row for o in outcomes for row in metrics_mod.distribution_rows(o)
+            dist_writer = pio.StagedWriter(config.distributions_out, pio.DISTRIBUTIONS_SCHEMA)
+            try:
+                dist_writer.write_rows(
+                    row for o in outcomes for row in metrics_mod.distribution_rows(o)
+                )
+                dist_writer.close_publish()
+            except BaseException:
+                dist_writer.abort()
+                raise
+            published.append(config.distributions_out)
+
+            comparison_writer.close_publish()
+            published.append(config.comparisons_out)
+            pio.write_table(
+                config.findings_out, pio.FINDINGS_SCHEMA, [f.to_row() for f in findings]
             )
-            dist_writer.close_publish()
-        except BaseException:
-            dist_writer.abort()
-            raise
-        published.append(config.distributions_out)
+            published.append(config.findings_out)
+            pio.write_table(config.decisions_out, pio.DECISIONS_SCHEMA, decisions_rows)
+            published.append(config.decisions_out)
 
-        pio.write_table(config.comparisons_out, pio.COMPARISONS_SCHEMA, all_comparison_rows)
-        published.append(config.comparisons_out)
-        pio.write_table(config.findings_out, pio.FINDINGS_SCHEMA, [f.to_row() for f in findings])
-        published.append(config.findings_out)
-        pio.write_table(config.decisions_out, pio.DECISIONS_SCHEMA, decisions_rows)
-        published.append(config.decisions_out)
-
-        provenance = build_provenance(
-            cli_args=config.cli_args,
-            manifest=manifest,
-            policy=policy,
-            outcomes=outcomes,
-            sampling=sampling,
-            resources=resources,
-            scan_seconds_total=scan_seconds,
-            comparison_seconds=comparison_seconds,
-            hash_inputs=config.hash_inputs,
-        )
-        _write_text_atomic(
-            config.provenance_out,
-            json.dumps(provenance, indent=2, sort_keys=True),
-        )
-        published.append(config.provenance_out)
-
-        if config.report_out is not None:
-            from seqconsistency.html_report import render_html_report
-
-            html = render_html_report(
-                decisions_rows,
-                findings,
-                all_comparison_rows,
-                outcomes,
-                policy,
-                provenance,
+            provenance = build_provenance(
+                cli_args=config.cli_args,
+                manifest=manifest,
+                policy=policy,
+                outcomes=outcomes,
+                sampling=sampling,
+                resources=resources,
+                scan_seconds_total=scan_seconds,
+                comparison_seconds=comparison_seconds,
+                hash_inputs=config.hash_inputs,
             )
-            _write_text_atomic(config.report_out, html)
-            published.append(config.report_out)
+            _write_text_atomic(
+                config.provenance_out,
+                json.dumps(provenance, indent=2, sort_keys=True),
+            )
+            published.append(config.provenance_out)
+
+            if config.report_out is not None:
+                from seqconsistency.html_report import render_html_report
+
+                html = render_html_report(
+                    decisions_rows,
+                    findings,
+                    all_comparison_rows,
+                    outcomes,
+                    policy,
+                    provenance,
+                )
+                _write_text_atomic(config.report_out, html)
+                published.append(config.report_out)
+
+    except BaseException:
+        comparison_writer.abort()  # no-op if already published
+        raise
 
     any_not_compatible = any(d["overall_decision"] != "COMPATIBLE" for d in decisions_rows)
     return EXIT_NOT_COMPATIBLE if any_not_compatible else EXIT_OK

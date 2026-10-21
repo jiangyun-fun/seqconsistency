@@ -9,11 +9,13 @@ Design (README § FASTQ processing):
 - Per-base work is vectorized with numpy over concatenated record buffers; there are
   no per-base Python loops. Memory is bounded by the batch byte budget, never by the
   file size or read count.
-- Quality encoding: Phred+33 only. Bytes outside ASCII [33, 126] abort the run. As a
-  documented heuristic (ASCII ranges alone cannot always distinguish encodings), a
-  file whose full-file minimum quality byte is >= 64 ('@') and maximum >= 75 ('K') is
-  rejected as likely Phred+64: under Phred+33 that would mean every base >= Q31 with
-  some > Q41, which Illumina instruments do not emit.
+- Quality encoding: Phred+33 only. Bytes outside ASCII [33, 126] abort the run
+  (provably not Phred+33). ASCII ranges alone cannot always distinguish encodings;
+  the documented heuristic rejects a file only when it carries the classic Phred+64
+  signature: full-file minimum quality byte >= 64 ('@') AND maximum >= 90 ('Z').
+  Under Phred+33 a maximum >= 90 means some base above Q57, which no platform emits;
+  under Phred+64 it means Q26, which is routine. Uniform high-quality Phred+33 files
+  (e.g. every byte 'K', Q42) are accepted.
 - Alphabet: A/C/G/T/N upper or lower case. Other IUPAC codes abort the run in v1.
 """
 
@@ -69,9 +71,11 @@ for _q in range(33, 127):
 
 MIN_QUAL_BYTE = 33
 MAX_QUAL_BYTE = 126
-#: Heuristic Phred+64 rejection thresholds (see module docstring).
+#: Heuristic Phred+64 rejection thresholds (see module docstring): classic Phred+64
+#: output has no byte below '@' (64) and routinely reaches 'Z' (90) or above;
+#: Phred+33 never exceeds Q45 in practice, so a max byte >= 90 cannot be Phred+33.
 LIKELY_P64_MIN_BYTE = 64
-LIKELY_P64_MAX_BYTE = 75
+LIKELY_P64_MAX_BYTE = 90
 
 POSITIONAL_MAX_CYCLES: dict[ReadType, int] = {
     ReadType.PAIRED_SHORT: 512,
@@ -191,13 +195,34 @@ def normalize_read_name(header: bytes) -> bytes:
 
 
 def mate_annotation(header: bytes) -> bytes | None:
-    """Explicit mate annotation: the /1 or /2 suffix, else None."""
-    name = header[1:].split(None, 1)[0] if len(header) > 1 else b""
+    """Explicit mate annotation on one header, else None.
+
+    Both conventions are recognized: a legacy ``/1``/``/2`` name suffix and the
+    CASAVA comment mate number (``name 1:N:0:INDEX`` / ``name 2:N:0:INDEX``).
+    If both are present and disagree, the header contradicts itself — the caller
+    must reject it (``contradictory_mate_annotation``).
+    """
+    body = header[1:] if len(header) > 1 else b""
+    parts = body.split(None, 1)
+    name = parts[0]
+    suffix: bytes | None = None
     if name.endswith(b"/1"):
-        return b"/1"
-    if name.endswith(b"/2"):
-        return b"/2"
-    return None
+        suffix = b"/1"
+    elif name.endswith(b"/2"):
+        suffix = b"/2"
+    casava: bytes | None = None
+    if len(parts) > 1:
+        first_comment_token = parts[1].split(None, 1)[0]
+        if first_comment_token.startswith(b"1:"):
+            casava = b"/1"
+        elif first_comment_token.startswith(b"2:"):
+            casava = b"/2"
+    if suffix is not None and casava is not None and suffix != casava:
+        raise InputDataError(
+            f"read {name!r} carries contradictory mate annotations: name suffix "
+            f"{suffix!r} but CASAVA comment says {casava!r}"
+        )
+    return suffix if suffix is not None else casava
 
 
 class StrandStats:
@@ -396,10 +421,11 @@ class StrandStats:
         if st.min_qual_byte >= LIKELY_P64_MIN_BYTE and st.max_qual_byte >= LIKELY_P64_MAX_BYTE:
             raise InputDataError(
                 "quality encoding rejected: every quality byte >= ASCII 64 with "
-                f"maximum {st.max_qual_byte} is consistent with Phred+64 and not with "
-                "Phred+33 instrument output; v1 supports Phred+33 only "
-                "(ASCII ranges alone cannot always distinguish encodings — this "
-                "heuristic is documented in the README)",
+                f"maximum {st.max_qual_byte} carries the classic Phred+64 signature "
+                "(no base below Q31 and some above Q57 under Phred+33, which no "
+                "platform emits); v1 supports Phred+33 only — ASCII ranges alone "
+                "cannot always distinguish encodings, so this heuristic is "
+                "documented in the README",
                 source=self.source,
             )
         arr, ov, un, n = self._gc

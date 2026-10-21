@@ -58,6 +58,9 @@ FLAG_SUPPL = 0x800
 #: Flush buffered per-record values into histograms at this chunk size.
 HIST_FLUSH_RECORDS = 65536
 
+#: Merge reservoir candidates in chunks of this size (near-linear filling).
+CANDIDATE_FLUSH = 4096
+
 
 def _record_features(record: Any) -> tuple[float, float, float, float, float]:
     """Per-read features for one eligible BAM record.
@@ -129,6 +132,7 @@ def scan_bam(
             for sq in header.get("SQ", []) or []
         ]
         read_groups = [dict(rg) for rg in header.get("RG", []) or []]
+        rg_ids = {rg.get("ID", "") for rg in read_groups}
 
         flags = BamFlagCounts()
         length_edges = (
@@ -144,6 +148,27 @@ def scan_bam(
         rng = np.random.default_rng(dataset_seed(sampling.master_seed, dataset_id))
         reservoir = FeatureReservoir(sample_size)
         insert_reservoir = FeatureReservoir(sample_size)
+        # Candidate buffers: reservoir updates are merged in chunks so filling
+        # stays near-linear instead of quadratic in the sample size.
+        cand_rows: list[tuple[float, tuple]] = []
+        cand_inserts: list[tuple[float, float]] = []
+
+        def _flush_candidates() -> None:
+            if cand_rows:
+                reservoir.add_block(
+                    np.array([r for _, r in cand_rows], dtype=np.float64),
+                    keys=np.array([k for k, _ in cand_rows], dtype=np.float64),
+                )
+                cand_rows.clear()
+
+        def _flush_insert_candidates() -> None:
+            if cand_inserts:
+                insert_reservoir.add_block(
+                    np.array([[v] for _, v in cand_inserts], dtype=np.float64),
+                    keys=np.array([k for k, _ in cand_inserts], dtype=np.float64),
+                )
+                cand_inserts.clear()
+
         prev_tid = -2
         prev_pos = -1
         seen_unplaced = False
@@ -216,10 +241,22 @@ def scan_bam(
                             insert_n += 1
                             ikey = float(rng.random())
                             if ikey < insert_reservoir.threshold or not insert_reservoir.is_full:
-                                insert_reservoir.add_block(
-                                    np.array([[float(tlen)]], dtype=np.float64),
-                                    keys=np.array([ikey]),
-                                )
+                                # Batched candidates: reservoir updates are merged
+                                # in chunks, never per record (per-record updates
+                                # made filling quadratic).
+                                cand_inserts.append((ikey, float(tlen)))
+                                if len(cand_inserts) >= CANDIDATE_FLUSH:
+                                    _flush_insert_candidates()
+                # Clipping summary (primary records, soft+hard clipped bases).
+                cig = record.cigartuples
+                if cig is not None:
+                    clip = sum(ln for op, ln in cig if op in (4, 5))
+                    if clip:
+                        flags.clipped_primary_records += 1
+                        flags.clipped_bases += clip
+                # Read-group tag must reference a header definition (SAM spec).
+                if record.has_tag("RG") and record.get_tag("RG") not in rg_ids:
+                    flags.records_with_undefined_rg += 1
                 qlen = record.query_length or 0
                 if qlen > 0:
                     buf_len.append(qlen)
@@ -236,11 +273,10 @@ def scan_bam(
                         flags.records_missing_qualities += 1
                     key = float(rng.random())
                     if key < reservoir.threshold or not reservoir.is_full:
-                        feats = _record_features(record)
-                        reservoir.add_block(
-                            np.array([feats], dtype=np.float64),
-                            keys=np.array([key]),
-                        )
+                        # Batched candidates (see comment above).
+                        cand_rows.append((key, _record_features(record)))
+                        if len(cand_rows) >= CANDIDATE_FLUSH:
+                            _flush_candidates()
                 if len(buf_mapq) >= HIST_FLUSH_RECORDS:
                     mapq_acc.add_values(buf_mapq)
                     buf_mapq = []
@@ -258,6 +294,8 @@ def scan_bam(
                 source=str(path),
                 location=f"record {record_no + 1}",
             ) from exc
+        _flush_candidates()
+        _flush_insert_candidates()
         mapq_acc.add_values(buf_mapq)
         insert_acc.add_values(buf_insert)
         length_acc.add_values(buf_len)

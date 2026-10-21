@@ -97,3 +97,18 @@ def test_shared_keys_keep_pairs_together():
     r2.add_block(rng.normal(size=(500, 5)) * 3, keys=keys)
     # Same keys -> same retained positions in stream order.
     assert len(r1.sample()["length"]) == len(r2.sample()["length"]) == 30
+
+
+def test_batched_and_single_updates_give_identical_samples():
+    # BAM feeds candidates in chunks; FASTQ feeds bigger blocks. Both must give
+    # the k-smallest identical result for one key stream.
+    rng = np.random.default_rng(31)
+    rows = rng.normal(size=(50000, 5))
+    keys = np.random.default_rng(41).random(50000)
+    single = FeatureReservoir(1000)
+    for i in range(0, 50000, 7):  # awkward chunk sizes
+        single.add_block(rows[i : i + 7], keys=keys[i : i + 7])
+    chunked = FeatureReservoir(1000)
+    for i in range(0, 50000, 4096):
+        chunked.add_block(rows[i : i + 4096], keys=keys[i : i + 4096])
+    assert single.sample()["length"] == chunked.sample()["length"]

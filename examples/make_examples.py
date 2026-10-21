@@ -2,14 +2,14 @@
 
 Writes synthetic inputs, manifests, and a policy per scenario into --out-dir:
 
-01_paired_short          two Illumina PE runs of one library        -> COMPATIBLE
-02_merged_short          two merged-read FASTQ datasets (+fastp)   -> COMPATIBLE/REVIEW
-03_ont                   two ONT run datasets                       -> COMPATIBLE
-04_bam                   two coordinate-sorted BAM datasets         -> COMPATIBLE
+01_paired_short          two Illumina PE runs of one library        -> REVIEW
+02_merged_short          two merged-read FASTQ datasets (+fastp)   -> REVIEW
+03_ont                   two ONT run datasets                       -> REVIEW
+04_bam                   two coordinate-sorted BAM datasets         -> REVIEW
 05_shifted_gc            shifted GC content                         -> REVIEW
 06_incompatible          different declared samples                 -> INCOMPATIBLE
 07_insufficient_identity policy demands independent verification   -> INSUFFICIENT_EVIDENCE
-08_multi_group           two pooling groups in one invocation       -> COMPATIBLE+REVIEW
+08_multi_group           two pooling groups in one invocation       -> REVIEW+REVIEW
 
 All data is synthetic. Nothing here validates biology; the scenarios demonstrate
 mechanics only.
@@ -195,7 +195,7 @@ def main(argv: list[str] | None = None) -> int:
             pe_row("run2", "poolA", "sample1", *b),
         ],
     )
-    notes.append(f"01 paired_short (expect COMPATIBLE): {m}")
+    notes.append(f"01 paired_short (expect REVIEW — example thresholds uncalibrated): {m}")
 
     # 02 — merged reads with fastp evidence.
     d = out / "02_merged_short"
@@ -222,7 +222,7 @@ def main(argv: list[str] | None = None) -> int:
             }
         )
     m = write_manifest(d / "manifest.tsv", rows)
-    notes.append(f"02 merged_short (expect COMPATIBLE or REVIEW): {m}")
+    notes.append(f"02 merged_short (expect REVIEW — uncalibrated thresholds): {m}")
 
     # 03 — ONT.
     d = out / "03_ont"
@@ -248,7 +248,7 @@ def main(argv: list[str] | None = None) -> int:
             }
         )
     m = write_manifest(d / "manifest.tsv", rows)
-    notes.append(f"03 ont (expect COMPATIBLE with illustrative thresholds): {m}")
+    notes.append(f"03 ont (expect REVIEW — uncalibrated thresholds): {m}")
 
     # 04 — BAM.
     d = out / "04_bam"
@@ -285,7 +285,7 @@ def main(argv: list[str] | None = None) -> int:
             },
         ],
     )
-    notes.append(f"04 bam (expect COMPATIBLE): {m}")
+    notes.append(f"04 bam (expect REVIEW — uncalibrated thresholds): {m}")
 
     # 05 — shifted GC.
     d = out / "05_shifted_gc"
@@ -351,7 +351,7 @@ def main(argv: list[str] | None = None) -> int:
             pe_row("g2_b", "group2", "sample2", *e),
         ],
     )
-    notes.append(f"08 multi-group (expect group1 COMPATIBLE, group2 REVIEW): {m}")
+    notes.append(f"08 multi-group (expect both REVIEW under uncalibrated thresholds): {m}")
 
     readme = out / "README.txt"
     readme.write_text(

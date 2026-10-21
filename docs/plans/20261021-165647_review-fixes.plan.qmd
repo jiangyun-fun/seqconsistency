@@ -1,0 +1,65 @@
+---
+title: "seqconsistency — external review fixes"
+author: "Yun Jiang"
+date: today
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    toc-expand: true
+    html-math-method: mathjax
+    grid:
+      margin-width: 400px
+include-in-header:
+  text: |
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔎</text></svg>">
+---
+
+# Objective
+
+Apply the agreed disposition of an external code review (2026-10-21): eight
+full-agreement fixes, three partial fixes with adjusted designs, one addition
+(duckdb dev extra), and two documented disagreements (sourmash/coverage are
+Phase-2 by spec; retained fraction stays as a distinct, correctly named metric).
+
+# Scope (agreed items)
+
+1. Uncalibrated thresholds no longer automatically approve: comparisons carry
+   `threshold_calibrated`; PASS on uncalibrated → REVIEW +
+   `TECH_THRESHOLD_UNCALIBRATED` (spec §7 "configured or calibrated").
+2. Output collision protection covers manifest, policy, and fastp inputs.
+3. Phred+64 heuristic tightened to the classic signature (min ≥ 64 AND max ≥ 90);
+   uniform high-quality Phred+33 (e.g. all `K`) accepted.
+4. BAM metrics selected by profile: insert-size only for `paired_short`;
+   `n_content` added for BAM.
+5. BAM `SM` reconciliation (conflict ⇒ identity FAIL; mismatch vs manifest ⇒
+   metadata REVIEW) + full-scan undefined-RG record counter.
+6. Reservoir: no per-update sort; BAM candidates batched (~4096) — the old
+   per-record update was the real BAM bottleneck (reviewer's micro-benchmark and
+   our re-profile confirm).
+7. Comparison stage: lazy pair generation, per-dataset prepared inputs computed
+   once, per-group streaming into the staged Parquet writer.
+8. CASAVA mate-number parsing with cross-file and within-header contradiction
+   checks.
+9. Strict policy validation: real booleans, finite max, known (metric, method),
+   string-list selectors, overlapping-scope duplicate rejection (disjoint repeats
+   allowed).
+10. Optional fastp evidence → `NOT_ASSESSED` unless required;
+    `merge_rate` preferred over `merge_retained_fraction`.
+11. Missed Phase-1 metrics added: BAM clipping summaries; joint
+    read-length × mean-quality summaries (sample-based).
+12. `duckdb` added to dev extras (tests import it).
+
+# Files to touch
+
+`src/seqconsistency/{sampling,fastq,bam,comparison,policy,parquet_io,pipeline,metrics,distributions,models}.py`,
+`policies/example-illustrative.yaml`, `tests/**`, `examples/make_examples.py`,
+`README.md`, `pyproject.toml`, `benchmarks/results-2026-10-21.*` (re-measured),
+`docs/**`.
+
+# Verification
+
+1. New regression test per fix (reviewer counterexamples included).
+2. Full suite green; mypy/ruff clean.
+3. BAM scan re-profiled; full benchmark re-run clean; README numbers corrected.
+4. Examples regenerated — expected decisions under the corrected semantics.

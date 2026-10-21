@@ -89,10 +89,12 @@ class FeatureReservoir:
             sel = np.argpartition(self._keys, self.capacity - 1)[: self.capacity]
             self._keys = self._keys[sel]
             self._rows = self._rows[sel]
-        order = np.argsort(self._keys, kind="stable")
-        self._keys = self._keys[order]
-        self._rows = self._rows[order]
-        self._threshold = float(self._keys[-1])
+        # Deliberately NO per-update sort: partition selection keeps the k smallest
+        # set; sorting is deferred to sample(). Per-update sorting made single-row
+        # callers (BAM) quadratic — O(k log k) per accepted record.
+        self._threshold = (
+            float(np.max(self._keys)) if self._keys.size >= self.capacity else math.inf
+        )
 
     @property
     def threshold(self) -> float:
@@ -107,15 +109,19 @@ class FeatureReservoir:
     def sample(self) -> dict[str, list[float]]:
         """Return the retained sample as one list per named feature.
 
-        Reservoirs holding fewer columns than FEATURE_NAMES (e.g. insert-size-only)
-        return empty lists for the unused feature names.
+        Rows are key-sorted here (the only sort, done once) so output order is
+        deterministic regardless of how blocks were offered. Reservoirs holding
+        fewer columns than FEATURE_NAMES (e.g. insert-size-only) return empty
+        lists for the unused feature names.
         """
         if self._rows is None or self._rows.shape[0] == 0:
             return {name: [] for name in FEATURE_NAMES}
-        ncols = self._rows.shape[1]
+        assert self._keys is not None
+        order = np.argsort(self._keys, kind="stable")
+        rows = self._rows[order]
+        ncols = rows.shape[1]
         return {
-            name: self._rows[:, i].tolist() if i < ncols else []
-            for i, name in enumerate(FEATURE_NAMES)
+            name: rows[:, i].tolist() if i < ncols else [] for i, name in enumerate(FEATURE_NAMES)
         }
 
     @property

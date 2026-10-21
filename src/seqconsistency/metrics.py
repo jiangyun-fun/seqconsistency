@@ -14,6 +14,7 @@ import numpy as np
 
 from seqconsistency import distributions as dist
 from seqconsistency.models import (
+    SHORT_PROFILES,
     STRATUM_PAIR,
     STRATUM_R1,
     STRATUM_R2,
@@ -391,6 +392,31 @@ def _bam_rows(dataset_id: str, pool_group: str, outcome: DatasetOutcome) -> list
         f.records_missing_sequence,
         f.total_records,
     )
+    # Clipping summary: soft+hard clipped bases on primary records (spec §6.5).
+    add(
+        "clipping",
+        "clipped_primary_fraction",
+        _safe_div(f.clipped_primary_records, f.primary),
+        "fraction",
+        f.primary,
+        f.primary,
+    )
+    add(
+        "clipping",
+        "clipped_bases_per_read",
+        _safe_div(f.clipped_bases, f.primary),
+        "bases",
+        f.primary,
+        f.primary,
+    )
+    add(
+        "records",
+        "undefined_rg",
+        float(f.records_with_undefined_rg),
+        "records",
+        f.records_with_undefined_rg,
+        f.total_records,
+    )
     add("bases", "total", float(bam.total_bases), "bases", bam.total_bases, None)
     add(
         "reads",
@@ -712,6 +738,20 @@ def distribution_rows(outcome: DatasetOutcome) -> list[dict[str, Any]]:
                             "sampling_mode": SamplingMode.FULL_SCAN,
                         }
                     )
+            # Joint read-length x mean-quality summary (sample-based, spec §6.1).
+            sample = outcome.fastq.sample_r2 if stratum == STRATUM_R2 else outcome.fastq.sample_r1
+            if sample:
+                rows.extend(
+                    _joint_rows(
+                        spec.dataset_id,
+                        spec.pool_group,
+                        "fastq",
+                        stratum,
+                        sample.get("length", []),
+                        sample.get("mean_quality_arithmetic", []),
+                        spec.read_type in SHORT_PROFILES,
+                    )
+                )
     if outcome.bam is not None:
         bam = outcome.bam
         for hist in (bam.mapq_hist, bam.insert_hist, bam.length_hist):
@@ -767,6 +807,60 @@ def distribution_rows(outcome: DatasetOutcome) -> list[dict[str, Any]]:
                     mq_hist,
                     SamplingMode.SAMPLE,
                 )
+            )
+            rows.extend(
+                _joint_rows(
+                    spec.dataset_id,
+                    spec.pool_group,
+                    "alignment",
+                    STRATUM_READS,
+                    bam.sample_reads["length"],
+                    bam.sample_reads["mean_quality_arithmetic"],
+                    spec.read_type in SHORT_PROFILES,
+                )
+            )
+    return rows
+
+
+def _joint_rows(
+    dataset_id: str,
+    pool_group: str,
+    component: str,
+    stratum: str,
+    lengths: list[float],
+    qualities: list[float],
+    is_short: bool,
+) -> list[dict[str, Any]]:
+    """Joint read-length x mean-quality summary rows (spec §6.1, sample-based).
+
+    ``bin_index`` is the length bin; the quality bin is the ``category``
+    (``q00``..``q12``). Rows with zero counts are omitted; the per-row
+    ``observation_count`` carries the finite-pair total so omissions are visible.
+    """
+    edges = dist.JOINT_SHORT_LEN_EDGES if is_short else dist.JOINT_LONG_LEN_EDGES
+    counts, n_pairs = dist.joint_bin_counts(lengths, qualities, edges)
+    rows: list[dict[str, Any]] = []
+    for i in range(counts.shape[0]):
+        for j in range(counts.shape[1]):
+            if counts[i, j] == 0:
+                continue
+            rows.append(
+                {
+                    "dataset_id": dataset_id,
+                    "pool_group": pool_group,
+                    "component": component,
+                    "stratum": stratum,
+                    "metric": "joint_length_quality",
+                    "bin_index": i,
+                    "bin_start": edges[i],
+                    "bin_end": edges[i + 1],
+                    "category": f"q{j:02d}",
+                    "count": int(counts[i, j]),
+                    "frequency": int(counts[i, j]) / n_pairs if n_pairs else 0.0,
+                    "value": None,
+                    "observation_count": n_pairs,
+                    "sampling_mode": SamplingMode.SAMPLE,
+                }
             )
     return rows
 

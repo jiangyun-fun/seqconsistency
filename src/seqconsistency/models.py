@@ -292,6 +292,9 @@ class BamFlagCounts:
     read1_mapped: int = 0
     records_missing_qualities: int = 0
     records_missing_sequence: int = 0
+    clipped_primary_records: int = 0
+    clipped_bases: int = 0
+    records_with_undefined_rg: int = 0
 
 
 @dataclass

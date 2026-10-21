@@ -147,7 +147,7 @@ def test_insufficient_observations(tmp_path: Path):
 
 def test_pair_ordering_is_deterministic(tmp_path: Path):
     ids = ["d3", "d1", "d2"]
-    pairs = generate_pairs(ids)
+    pairs = list(generate_pairs(ids))
     assert pairs == [("d1", "d2"), ("d1", "d3"), ("d2", "d3")]
     files = [
         write_fastq(tmp_path / f"{i}.fastq", make_records(100, seed=hash(i) % 1000)) for i in ids
@@ -234,10 +234,15 @@ def test_merged_short_fastp_missing_evidence_row(tmp_path: Path):
     p2 = write_fastq(tmp_path / "b.fastq", make_records(500, seed=16))
     outs = [_outcome("a", p1), _outcome("b", p2)]
     rows = compare_pair("g", outs[0], outs[1], 10, _resolver())
-    merge = [r for r in rows if r["metric"] == "merge_retained_fraction"]
+    merge = [r for r in rows if r["metric"] == "merge_rate"]
     assert len(merge) == 1
-    assert merge[0]["status"] == "MISSING_EVIDENCE"
-    assert merge[0]["reason_code"] == "FASTP_EVIDENCE_MISSING"
+    # Not required by default: assessed as nothing, blocks nothing.
+    assert merge[0]["status"] == "NOT_ASSESSED"
+    assert merge[0]["reason_code"] == "FASTP_EVIDENCE_OPTIONAL"
+    required = compare_pair("g", outs[0], outs[1], 10, _resolver(), require_fastp=True)
+    req = [r for r in required if r["metric"] == "merge_rate"]
+    assert req[0]["status"] == "MISSING_EVIDENCE"
+    assert req[0]["reason_code"] == "FASTP_EVIDENCE_MISSING"
 
 
 def test_merged_short_fastp_retained_comparison(tmp_path: Path):
@@ -277,3 +282,63 @@ def test_merged_short_fastp_retained_comparison(tmp_path: Path):
     assert merge["value"] == pytest.approx(0.5)
     assert merge["method"] == "absolute_difference"
     assert merge["status"] == STATUS_EXCEED  # |0.9-0.4| = 0.5 > 0.1
+    assert merge["threshold_calibrated"] is True
+
+
+def test_merge_rate_preferred_over_retained_fraction(tmp_path: Path):
+    import json
+
+    from seqconsistency.fastq import parse_fastp_json
+
+    p1 = write_fastq(tmp_path / "a.fastq", make_records(500, seed=17))
+    p2 = write_fastq(tmp_path / "b.fastq", make_records(500, seed=18))
+    f1 = tmp_path / "a.json"
+    f2 = tmp_path / "b.json"
+    # Explicit merged-read counts present -> merge_rate compared, retained ignored.
+    f1.write_text(
+        json.dumps(
+            {
+                "summary": {
+                    "before_filtering": {"total_reads": 1000},
+                    "after_filtering": {"total_reads": 900},
+                },
+                "merging": {"merged_reads": 600},
+            }
+        )
+    )
+    f2.write_text(
+        json.dumps(
+            {
+                "summary": {
+                    "before_filtering": {"total_reads": 1000},
+                    "after_filtering": {"total_reads": 400},
+                },
+                "merging": {"merged_reads": 610},
+            }
+        )
+    )
+    o1, o2 = _outcome("a", p1), _outcome("b", p2)
+    o1.fastp = parse_fastp_json(f1)
+    o2.fastp = parse_fastp_json(f2)
+    rows = compare_pair("g", o1, o2, 10, _resolver())
+    metrics = [r["metric"] for r in rows if r["component"] == "processing"]
+    assert metrics == ["merge_rate"]  # retained fraction not compared
+    row = next(r for r in rows if r["metric"] == "merge_rate")
+    assert row["value"] == pytest.approx(0.01)
+
+
+def test_bam_metrics_selected_by_profile():
+    from seqconsistency.comparison import bam_metrics
+    from seqconsistency.models import ReadType
+
+    paired = bam_metrics(ReadType.PAIRED_SHORT)
+    ont = bam_metrics(ReadType.ONT)
+    assert any(d.metric == "insert_size" for d in paired)
+    assert not any(d.metric == "insert_size" for d in ont)
+    assert {d.metric for d in ont} == {
+        "read_length",
+        "mean_read_quality",
+        "gc_content",
+        "n_content",
+        "mapq",
+    }

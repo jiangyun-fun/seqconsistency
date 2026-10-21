@@ -20,6 +20,7 @@ described as validated; calibration guidance is in the README.
 from __future__ import annotations
 
 import hashlib
+import math
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Any
@@ -31,6 +32,8 @@ from seqconsistency.comparison import (
     STATUS_INSUFFICIENT_OBSERVATIONS,
     STATUS_MISSING_EVIDENCE,
     STATUS_NO_THRESHOLD,
+    STATUS_NOT_ASSESSED,
+    STATUS_PASS,
     ThresholdResolver,
     ThresholdRule,
 )
@@ -123,6 +126,42 @@ def _enum(value: Any, allowed: tuple[str, ...], where: str) -> str:
     return value
 
 
+def _strict_bool(value: Any, where: str) -> bool:
+    """Accept only real YAML booleans. ``bool("false")`` would silently be True."""
+    if not isinstance(value, bool):
+        raise ConfigError(f"policy {where}: expected a boolean (true/false), got {value!r}")
+    return value
+
+
+def _str_list(value: Any, where: str) -> tuple[str, ...] | None:
+    if value is None:
+        return None
+    if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
+        raise ConfigError(f"policy {where}: expected a list of strings, got {value!r}")
+    return tuple(value)
+
+
+def _selectors_intersect(a: tuple[str, ...] | None, b: tuple[str, ...] | None) -> bool:
+    """None selects everything; otherwise the two tuples must share a value."""
+    if a is None or b is None:
+        return True
+    return bool(set(a) & set(b))
+
+
+def _rules_conflict(existing: ThresholdConfig, new: ThresholdConfig) -> bool:
+    """Same metric+method whose profile/stratum/assay scopes can both match at once.
+
+    Repeating one metric across disjoint profile scopes (e.g. per-profile
+    read_length thresholds) is legitimate; an overlap would make rule order
+    silently decide which threshold applies.
+    """
+    return (
+        _selectors_intersect(existing.profiles, new.profiles)
+        and _selectors_intersect(existing.strata, new.strata)
+        and _selectors_intersect(existing.assays, new.assays)
+    )
+
+
 def _looks_like_yaml_text(text: str) -> bool:
     return "\n" in text or text.lstrip().startswith("{") or ":" in text.split("\n", 1)[0]
 
@@ -186,6 +225,8 @@ def load_policy(path_or_text: Any) -> Policy:
     thresholds_raw = technical["thresholds"]
     if not isinstance(thresholds_raw, list):
         raise ConfigError("policy technical.thresholds must be a list")
+    from seqconsistency.comparison import KNOWN_METRIC_METHODS
+
     thresholds: list[ThresholdConfig] = []
     for i, t in enumerate(thresholds_raw):
         where = f"technical.thresholds[{i}]"
@@ -197,21 +238,47 @@ def load_policy(path_or_text: Any) -> Policy:
             {"metric", "method", "max", "action", "calibrated", "profiles", "strata", "assays"},
             where,
         )
-        max_val = t["max"]
-        if not isinstance(max_val, (int, float)) or isinstance(max_val, bool) or max_val < 0:
-            raise ConfigError(f"policy {where}: 'max' must be a non-negative number")
-        thresholds.append(
-            ThresholdConfig(
-                metric=str(t["metric"]),
-                method=str(t["method"]),
-                max=float(max_val),
-                action=_enum(t["action"], _ACTION_VALUES, where),
-                calibrated=bool(t["calibrated"]),
-                profiles=tuple(t["profiles"]) if t.get("profiles") is not None else None,
-                strata=tuple(t["strata"]) if t.get("strata") is not None else None,
-                assays=tuple(t["assays"]) if t.get("assays") is not None else None,
+        metric = t["metric"]
+        method = t["method"]
+        if not isinstance(metric, str) or not isinstance(method, str):
+            raise ConfigError(f"policy {where}: 'metric' and 'method' must be strings")
+        if (metric, method) not in KNOWN_METRIC_METHODS:
+            known = ", ".join(sorted(f"{m}/{meth}" for m, meth in KNOWN_METRIC_METHODS))
+            raise ConfigError(
+                f"policy {where}: unknown metric/method pair {metric!r}/{method!r}; "
+                f"this version implements: {known}"
             )
+        max_val = t["max"]
+        if (
+            not isinstance(max_val, (int, float))
+            or isinstance(max_val, bool)
+            or not math.isfinite(float(max_val))
+            or max_val < 0
+        ):
+            raise ConfigError(f"policy {where}: 'max' must be a finite non-negative number")
+        new_rule = ThresholdConfig(
+            metric=metric,
+            method=method,
+            max=float(max_val),
+            action=_enum(t["action"], _ACTION_VALUES, where),
+            calibrated=_strict_bool(t["calibrated"], f"{where}.calibrated"),
+            profiles=_str_list(t.get("profiles"), f"{where}.profiles"),
+            strata=_str_list(t.get("strata"), f"{where}.strata"),
+            assays=_str_list(t.get("assays"), f"{where}.assays"),
         )
+        for existing in thresholds:
+            if (
+                existing.metric == new_rule.metric
+                and existing.method == new_rule.method
+                and _rules_conflict(existing, new_rule)
+            ):
+                raise ConfigError(
+                    f"policy {where}: duplicate threshold rule for metric "
+                    f"{metric!r} (method {method!r}) with overlapping "
+                    "profile/stratum/assay scopes — merge the rules; repeating a "
+                    "metric across disjoint scopes is fine"
+                )
+        thresholds.append(new_rule)
 
     min_obs = technical["min_observations"]
     if not isinstance(min_obs, int) or isinstance(min_obs, bool) or min_obs < 0:
@@ -221,12 +288,20 @@ def load_policy(path_or_text: Any) -> Policy:
         policy_id=str(data["policy_id"]),
         policy_version=str(data["policy_version"]),
         description=str(data.get("description", "")),
-        accept_declared_sample_id=bool(identity.get("accept_declared_sample_id", True)),
-        require_independent_verification=bool(
-            identity.get("require_independent_verification", False)
+        accept_declared_sample_id=_strict_bool(
+            identity.get("accept_declared_sample_id", True), "identity.accept_declared_sample_id"
         ),
-        same_sample_id_required=bool(metadata.get("same_sample_id_required", True)),
-        same_assay_required=bool(metadata.get("same_assay_required", True)),
+        require_independent_verification=_strict_bool(
+            identity.get("require_independent_verification", False),
+            "identity.require_independent_verification",
+        ),
+        same_sample_id_required=_strict_bool(
+            metadata.get("same_sample_id_required", True),
+            "metadata.same_sample_id_required",
+        ),
+        same_assay_required=_strict_bool(
+            metadata.get("same_assay_required", True), "metadata.same_assay_required"
+        ),
         distinct_library_ids=_enum(
             metadata.get("distinct_library_ids", "review"),
             _HETERO_VALUES,
@@ -242,8 +317,13 @@ def load_policy(path_or_text: Any) -> Policy:
             ("review", "incompatible"),
             "metadata.reference_mismatch",
         ),
-        require_fastp_evidence=bool(metadata.get("require_fastp_evidence", False)),
-        require_thresholds=bool(technical.get("require_thresholds", True)),
+        require_fastp_evidence=_strict_bool(
+            metadata.get("require_fastp_evidence", False),
+            "metadata.require_fastp_evidence",
+        ),
+        require_thresholds=_strict_bool(
+            technical.get("require_thresholds", True), "technical.require_thresholds"
+        ),
         min_observations=min_obs,
         thresholds=thresholds,
         raw_text=raw_text if isinstance(raw_text, str) else str(raw_text),
@@ -524,7 +604,7 @@ def _reference_dictionary_findings(
         first_bam = bams[0].bam
         assert first_bam is not None
         base = first_bam.header.references
-        for other in bams:
+        for other in bams[1:]:
             other_bam = other.bam
             assert other_bam is not None
             refs = other_bam.header.references
@@ -591,6 +671,107 @@ def _reference_dictionary_findings(
                 else:
                     seen[rid] = sig
     return status, findings
+
+
+def _bam_sample_metadata_findings(
+    outcomes: list[DatasetOutcome],
+) -> tuple[CheckStatus, CheckStatus, list[Finding]]:
+    """Reconcile BAM header sample metadata with the manifest, per group.
+
+    Returns (identity_status, metadata_status, findings). Header ``SM`` values are
+    declared metadata: several distinct values across a group is a declared-identity
+    conflict; one value contradicting the manifest ``sample_id`` is a metadata
+    discrepancy a human must resolve. Records referencing undefined read-group IDs
+    are counted during the scan and surfaced here.
+    """
+    group = outcomes[0].spec.pool_group
+    bams = [o for o in outcomes if o.bam is not None and o.spec.input_format is InputFormat.BAM]
+    findings: list[Finding] = []
+    identity_status = CheckStatus.PASS
+    metadata_status = CheckStatus.PASS
+    if not bams:
+        return identity_status, metadata_status, findings
+
+    sms: dict[str, list[str]] = {}
+    for o in bams:
+        bam = o.bam
+        assert bam is not None
+        for rg in bam.header.read_groups:
+            sm = rg.get("SM")
+            if sm:
+                sms.setdefault(str(sm), []).append(o.spec.dataset_id)
+    if len(sms) > 1:
+        identity_status = CheckStatus.FAIL
+        detail = "; ".join(f"{sm!r} ({', '.join(sorted(ids))})" for sm, ids in sorted(sms.items()))
+        findings.append(
+            Finding(
+                finding_id="",
+                pool_group=group,
+                dataset_id=None,
+                affected_datasets=sorted({d for ids in sms.values() for d in ids}),
+                component="identity",
+                severity=Severity.INCOMPATIBLE,
+                reason_code="BAM_SAMPLE_METADATA_CONFLICT",
+                message=(
+                    f"BAM headers in group {group!r} declare different samples (SM): {detail}."
+                ),
+                evidence_metric=None,
+                evidence_value=None,
+                recommended_action="Split the group by sample, or correct the SM tags.",
+            )
+        )
+    elif len(sms) == 1:
+        sm = next(iter(sms))
+        declared = {o.spec.sample_id for o in outcomes}
+        if len(declared) == 1 and sm not in declared:
+            metadata_status = CheckStatus.REVIEW
+            findings.append(
+                Finding(
+                    finding_id="",
+                    pool_group=group,
+                    dataset_id=None,
+                    affected_datasets=sorted(sms[sm]),
+                    component="metadata",
+                    severity=Severity.WARNING,
+                    reason_code="BAM_SM_MISMATCHES_MANIFEST",
+                    message=(
+                        f"BAM read groups declare sample SM={sm!r}, but the manifest "
+                        f"declares sample_id {next(iter(declared))!r} for group "
+                        f"{group!r}."
+                    ),
+                    evidence_metric=None,
+                    evidence_value=None,
+                    recommended_action="Decide which declaration is correct (manifest "
+                    "or BAM header) and align them before pooling.",
+                )
+            )
+    undefined_rg = [
+        (o.spec.dataset_id, o_bam.flags.records_with_undefined_rg)
+        for o in bams
+        if (o_bam := o.bam) is not None and o_bam.flags.records_with_undefined_rg
+    ]
+    if undefined_rg:
+        metadata_status = _worse(metadata_status, CheckStatus.REVIEW)
+        detail = "; ".join(f"{d}: {n} record(s)" for d, n in undefined_rg)
+        findings.append(
+            Finding(
+                finding_id="",
+                pool_group=group,
+                dataset_id=None,
+                affected_datasets=[d for d, _ in undefined_rg],
+                component="metadata",
+                severity=Severity.WARNING,
+                reason_code="BAM_UNDEFINED_RG_RECORDS",
+                message=(
+                    f"Records reference read-group IDs missing from the BAM header: {detail}."
+                ),
+                evidence_metric="records.undefined_rg",
+                evidence_value=None,
+                recommended_action="Fix the RG tags or header definitions before "
+                "pooling; merge tools will drop or misattribute these records.",
+            )
+        )
+    return identity_status, metadata_status, findings
 
 
 def _identity_assessment(
@@ -687,6 +868,9 @@ def _technical_assessment(
 
     resolver = policy.resolver_for(profile, assay)
     for row in comparison_rows:
+        if row["status"] == STATUS_NOT_ASSESSED:
+            # Optional evidence the policy did not request: blocks nothing.
+            continue
         if (
             row["status"] == STATUS_INSUFFICIENT_OBSERVATIONS
             or row["status"] == STATUS_MISSING_EVIDENCE
@@ -732,6 +916,24 @@ def _technical_assessment(
                 "Add a calibrated threshold before relying on this metric.",
                 row,
             )
+        elif row["status"] == STATUS_PASS and row.get("threshold_calibrated") is False:
+            # Spec §7: "If no threshold is configured or calibrated, report the
+            # metric but do not use it to automatically approve pooling." A PASS
+            # against an uncalibrated threshold is reported, never approving.
+            # This is a REVIEW (assessment ran, verdict untrusted), distinct from
+            # MISSING_EVIDENCE (no threshold at all).
+            status = _worse(status, CheckStatus.REVIEW)
+            finding(
+                "TECH_THRESHOLD_UNCALIBRATED",
+                f"Metric {row.get('metric')!r} (stratum {row.get('stratum')}) is "
+                f"within its maximum for {row.get('dataset_a')!r} and "
+                f"{row.get('dataset_b')!r}, but the threshold is marked "
+                "uncalibrated, so it cannot automatically approve pooling.",
+                Severity.WARNING,
+                "Calibrate thresholds with genuine between-run data, then set "
+                "calibrated: true; a human must accept this REVIEW otherwise.",
+                row,
+            )
     if (
         any(r["status"] == STATUS_NO_THRESHOLD for r in comparison_rows)
         and policy.require_thresholds
@@ -769,7 +971,12 @@ def evaluate_group(
     metadata_status, meta_findings = _metadata_findings(outcomes, policy)
     ref_status, ref_findings = _reference_dictionary_findings(outcomes, policy)
     metadata_status = _worse(metadata_status, ref_status)
+    bam_id_status, bam_md_status, bam_findings = _bam_sample_metadata_findings(outcomes)
+    metadata_status = _worse(metadata_status, bam_md_status)
     identity_status, identity_level, identity_findings = _identity_assessment(outcomes, policy)
+    identity_status = _worse(identity_status, bam_id_status)
+    if bam_id_status is CheckStatus.FAIL:
+        identity_level = IdentityEvidenceLevel.CONFLICTING
     technical_status, tech_findings = _technical_assessment(comparison_rows, policy, profile, assay)
 
     # fastp evidence requirement (merged_short).
@@ -812,7 +1019,7 @@ def evaluate_group(
     else:
         overall = DecisionState.COMPATIBLE
 
-    all_findings = meta_findings + ref_findings + identity_findings + tech_findings
+    all_findings = meta_findings + ref_findings + bam_findings + identity_findings + tech_findings
     assumptions: list[str] = []
     if identity_level is IdentityEvidenceLevel.DECLARED_ONLY:
         assumptions.append("identity_declared_not_verified")
