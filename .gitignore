@@ -5,3 +5,5 @@
 # report render outputs
 *.report.html
 *_files/
+
+__pycache__/
