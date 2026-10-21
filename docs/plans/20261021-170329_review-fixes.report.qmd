@@ -1,0 +1,592 @@
+---
+title: "seqconsistency — external review fixes report"
+author: "Yun Jiang"
+date: today
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    toc-expand: true
+    html-math-method: mathjax
+    grid:
+      margin-width: 400px
+include-in-header:
+  text: |
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔎</text></svg>">
+---
+
+<!-- Plan: docs/plans/20261021-165647_review-fixes.plan.qmd -->
+
+## feature
+
+### Calibration-aware approval, stricter validation, new metrics
+
+```
+level: high
+```
+
+#### reason
+
+Every behavior change has a dedicated regression test, including the reviewer's counterexamples, and the full suite plus type checks pass after the changes.
+
+#### description
+
+```
+type: [text]
+```
+
+1. Comparisons carry `threshold_calibrated`; a PASS against an uncalibrated threshold withholds approval (REVIEW + `TECH_THRESHOLD_UNCALIBRATED` finding), per spec §7 "configured or calibrated".
+2. Strict policy validation: real booleans, finite non-negative maxima, known `(metric, method)` pairs, string-list selectors, overlapping-scope duplicate rules rejected (disjoint per-profile repeats allowed).
+3. CASAVA mate-number parsing with cross-file and within-header contradiction checks.
+4. BAM `SM` reconciliation with the manifest, undefined-RG record counter, clipping summaries (full scan), and joint read-length × mean-quality summaries (sample-based, FASTQ and BAM).
+5. `merge_rate` preferred over `merge_retained_fraction`; optional fastp evidence is `NOT_ASSESSED` unless required.
+6. BAM metric selection by profile — insert-size only for `paired_short`; `n_content` added for BAM.
+
+#### before
+
+Uncalibrated thresholds approved pooling; a quoted `calibrated: "false"` silently became true; swapped CASAVA annotations, header/manifest sample conflicts, and unpaired-BAM insert demands all passed unnoticed.
+
+#### after
+
+Approval requires calibrated thresholds; malformed or contradictory policy and input metadata fail loudly; inapplicable evidence never blocks; two spec §6 metrics that were missing are now present.
+
+#### evidence
+
+```
+level: high
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+- `tests/test_policy.py::test_uncalibrated_threshold_prevents_automatic_approval`, `test_policy_load_and_strictness` (boolean/finiteness/method/overlap rejections).
+- `tests/test_fastq.py::test_swapped_casava_mate_annotations_rejected`, `test_uniform_high_quality_phred33_accepted`.
+- `tests/test_policy.py::test_bam_conflicting_sm_values_are_identity_conflict`, `test_bam_sm_mismatching_manifest_is_review`, `test_bam_undefined_rg_records_reported`.
+- `tests/test_e2e.py::test_ont_bam_group_has_no_insert_size_requirement` (also asserts joint and clipping rows exist).
+
+:::
+
+## fix
+
+### BAM reservoir was quadratic; 165× slower than necessary
+
+```
+level: high
+```
+
+#### reason
+
+A direct re-profile on the same 500k-record file before and after the fix shows 368 → 61,246 records/s, and a regression test proves batched and single-row updates produce identical samples.
+
+#### description
+
+```
+type: [statistic]
+```
+
+1. `FeatureReservoir.add_block` sorted the whole retained array on every update; the BAM path called it once per accepted record, so filling a reservoir of size k cost O(k² log k).
+2. The reservoir now defers sorting to `sample()` (partition selection keeps the k-smallest set; the k-th smallest comes from a partition max), and the BAM scanner batches accepted candidates in chunks of 4096.
+3. Measured on the benchmark file: 500,000 records in 8.164 s (61,246 rec/s), previously 1,360.5 s (368 rec/s).
+
+#### before
+
+A 500k-record BAM scan took 22 minutes, and the README wrongly attributed the cost to pysam.
+
+#### after
+
+The same scan takes 8 seconds, and the bottleneck documentation states what measurement now supports: pysam per-record access dominates, at roughly half the FASTQ rate.
+
+#### evidence
+
+```
+level: high
+type: [statistic]
+```
+
+::: {.callout-note collapse="true"}
+
+- `benchmarks/results-2026-10-21.json`: `bam` entry wall 8.164 s (re-run 2026-10-21T17:02+0800, same host and file as the 1,360.5 s entry in the prior measurement).
+- `tests/test_sampling.py::test_batched_and_single_updates_give_identical_samples`.
+
+:::
+
+### Output collision protection missed consumed inputs
+
+```
+level: high
+```
+
+#### reason
+
+Three new path tests demonstrate the rejection for manifest, policy, and fastp-report collisions, including with `--overwrite` supplied.
+
+#### description
+
+```
+type: [text]
+```
+
+1. `validate_output_paths` received only `path1`/`path2`; the manifest, policy, and fastp reports were unprotected, so `--metrics-out <manifest> --overwrite` would destroy the manifest at publish time.
+2. The pipeline now passes every consumed input into the collision check.
+
+#### before
+
+An output path equal to the manifest or policy was accepted and could overwrite the input after a successful run.
+
+#### after
+
+The run aborts with `output path ... collides with an input file` before any scanning.
+
+#### evidence
+
+```
+level: high
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+`tests/test_outputs_errors.py::test_output_colliding_with_manifest_rejected_even_with_overwrite`, `..._with_policy_rejected`, `..._with_fastp_report_rejected`.
+
+:::
+
+## limitation
+
+### Uncalibrated shipped policy can never approve
+
+```
+level: high
+```
+
+#### reason
+
+This is now enforced behavior with tests and updated examples, so the boundary is certain; it is listed because users must understand it before relying on outcomes.
+
+#### description
+
+```
+type: [text]
+```
+
+1. The shipped example policy marks every threshold `calibrated: false`, so its groups can never reach COMPATIBLE — they end in REVIEW with `TECH_THRESHOLD_UNCALIBRATED` findings.
+2. This follows the specification's rule that uncalibrated thresholds must not automatically approve pooling.
+3. All eight examples were regenerated and now show these corrected outcomes.
+
+#### evidence
+
+```
+level: high
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+`examples/run_examples.sh` output 2026-10-21: scenarios 1–5 and 8 → REVIEW; 6 → INCOMPATIBLE; 7 → INSUFFICIENT_EVIDENCE. README "Examples" section updated.
+
+:::
+
+## caveat
+
+### Phred+64 detection remains a heuristic
+
+```
+level: medium
+```
+
+#### reason
+
+The tightened bound (min ≥ 64 AND max ≥ 90) accepts the reviewer's uniform-Q42 counterexample and still rejects classic Phred+64 files, but ASCII-range overlap zones are inherently undecidable; the README documents both bounds.
+
+#### description
+
+```
+type: [text]
+```
+
+1. Bytes outside [33, 126] always abort.
+2. The ambiguity heuristic now requires the classic signature: no byte below `@` (64) and some byte at or above `Z` (90) — Q57+ is impossible under Phred+33 on real platforms, while Q26 under Phred+64 is routine.
+3. A file confined to bytes 64–89 remains ambiguous and is accepted as Phred+33, per the specification's instruction not to pretend ranges can always distinguish encodings.
+
+#### evidence
+
+```
+level: high
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+`tests/test_fastq.py::test_uniform_high_quality_phred33_accepted` (all-`K` accepted), `test_likely_phred64_rejected` (bytes up to 104 still rejected), `src/seqconsistency/fastq.py` module docstring and `LIKELY_P64_*` constants.
+
+:::
+
+## assumption
+
+### Reviewer disagreements resolved without new work
+
+```
+level: medium
+```
+
+#### reason
+
+The two disagreements rest on the specification text itself, which is in the record; no evidence contradicts them.
+
+#### description
+
+```
+type: [text]
+```
+
+1. Sourmash and coverage comparison remain unimplemented: the specification marks both Phase-2 optional, and the README/decisions state they are absent.
+2. `merge_retained_fraction` keeps its name and semantics (after/before); `merge_rate` was added as the preferred comparison when explicit merged-read counts exist, rather than replacing a correctly labeled metric.
+
+#### evidence
+
+```
+level: high
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+README "Limitations"/"Implemented / not implemented"; `tests/test_comparison.py::test_merge_rate_preferred_over_retained_fraction`.
+
+:::
+
+## conclusion
+
+### The review round improved correctness and removed the dominant performance defect
+
+```
+level: high
+```
+
+#### reason
+
+All agreed items are implemented with regression tests, the suite is green, and the re-measured benchmark quantifies the improvement on identical inputs.
+
+#### description
+
+```
+type: [text]
+```
+
+1. Approval semantics now match the specification for uncalibrated thresholds; three false-approval and false-rejection paths are closed.
+2. Input destruction via output collision is impossible for every consumed input.
+3. BAM scanning is 166× faster on the measured workload, and the committed bottleneck claim now matches measurement.
+
+#### evidence
+
+```
+level: high
+type: [statistic]
+```
+
+::: {.callout-note collapse="true"}
+
+Final suite exit 0 (`/tmp/final_suite2.log`); `benchmarks/results-2026-10-21.{json,md}` re-measured 17:02+0800; mypy and ruff clean.
+
+:::
+
+## recommendation
+
+### M: calibrate thresholds before production use
+
+```
+level: high
+```
+
+#### reason
+
+With approval now correctly withheld, the only path to COMPATIBLE is genuine calibration; using illustrative numbers as if calibrated would defeat the safeguard.
+
+#### description
+
+```
+type: [text]
+```
+
+1. Follow the README calibration workflow with genuine between-run data, then set `calibrated: true`.
+
+#### evidence
+
+```
+level: high
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+README "Threshold calibration".
+
+:::
+
+### L: re-profile after future scanner changes
+
+```
+level: medium
+```
+
+#### reason
+
+The reservoir misattribution shows how a plausible bottleneck story can be wrong; measurement caught it.
+
+#### description
+
+```
+type: [text]
+```
+
+1. Re-run `benchmarks/bench.py` and compare against the committed results before accepting any performance claim.
+
+#### evidence
+
+```
+level: medium
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+`benchmarks/results-2026-10-21.md` bottleneck note 3 records the 165× correction.
+
+:::
+
+## next
+
+### M: implement Phase 2 sourmash sequence-content comparison
+
+```
+level: medium
+```
+
+#### reason
+
+The action is chosen and specified in the task specification; it starts when Phase 2 work begins.
+
+#### description
+
+```
+type: [text]
+```
+
+1. Use the documented sourmash API or CLI; keep the evidence separate from QC metrics.
+
+#### evidence
+
+```
+level: unknown
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+None
+
+:::
+
+### M: implement reference-aware coverage comparison
+
+```
+level: medium
+```
+
+#### reason
+
+Also chosen and specified; blocked only by Phase-2 sequencing.
+
+#### description
+
+```
+type: [text]
+```
+
+1. Compatible references, explicit bins, documented filters, consistent normalization.
+
+#### evidence
+
+```
+level: unknown
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+None
+
+:::
+
+### L: recalibrate example thresholds with real data
+
+```
+level: medium
+```
+
+#### reason
+
+Calibration data is not in this repository, so the action is chosen but externally gated.
+
+#### description
+
+```
+type: [text]
+```
+
+1. Replace illustrative thresholds and set `calibrated: true` after the README workflow.
+
+#### evidence
+
+```
+level: unknown
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+None
+
+:::
+
+## observation
+
+### Re-measured benchmark after the fixes
+
+```
+level: high
+```
+
+#### reason
+
+The numbers come from the committed harness on the same regenerated-free inputs (idempotent generation) and an otherwise idle machine.
+
+#### description
+
+```
+type: [table]
+```
+
+| Workload | Before fix | After fix |
+|---|---:|---:|
+| SE FASTQ 2M×100 bp | 119,977 reads/s | 124,660 reads/s |
+| PE FASTQ 2M pairs | 56,643 pairs/s | 56,606 pairs/s |
+| Long reads 400k (4.48 Gb) | 22.99 M bases/s | 23.08 M bases/s |
+| BAM 500k records | 368 rec/s | 61,246 rec/s |
+| Workers 1 → 4 (CLI) | 5.34 → 3.02 s | 5.61 → 4.01 s |
+
+FASTQ paths are unchanged within run-to-run noise, as expected — the fixes touched BAM sampling and the comparison stage, not the FASTQ scan.
+
+#### evidence
+
+```
+level: high
+type: [table]
+```
+
+::: {.callout-note collapse="true"}
+
+`benchmarks/results-2026-10-21.json` (recorded 2026-10-21T17:02:16+0800) against the previous commit's numbers.
+
+:::
+
+## process
+
+### discarded a contaminated benchmark run, then re-ran clean
+
+```
+status: right
+```
+
+#### description
+
+```
+type: [text]
+```
+
+1. The first post-fix benchmark started while tests were still running, which would have contended the CPU.
+2. It was killed and re-run after the machine went idle; the committed numbers come from the clean run.
+
+#### evidence
+
+```
+level: high
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+Session log; `BENCH_EXIT:0` with 15 entries in `/tmp/bench-full3.log`.
+
+:::
+
+### initially attributed the BAM slowness to pysam without profiling
+
+```
+status: wrong
+```
+
+#### description
+
+```
+type: [text]
+```
+
+1. The MVP report stated pysam object creation dominated BAM scanning — asserted from plausibility, not measurement.
+2. The reviewer's micro-benchmark challenged it; profiling after the reservoir fix showed the quadratic reservoir update was the real cost (368 → 61k rec/s with pysam unchanged).
+3. The better action, now applied: profile before writing any bottleneck claim, and record the correction in the benchmark document.
+
+#### evidence
+
+```
+level: high
+type: [statistic]
+```
+
+::: {.callout-note collapse="true"}
+
+`benchmarks/results-2026-10-21.md` bottleneck note 3; direct re-profile on `/tmp/seqc-bench/bench.bam` (8.2 s for 500k records).
+
+:::
+
+## change
+
+### Review-fix round mutations
+
+```
+level: high
+```
+
+#### reason
+
+Recorded facts from git and the pixi manifest at commit time.
+
+#### description
+
+```
+type: [table, text]
+```
+
+| Verb | Paths |
+|---|---|
+| Updated | `src/seqconsistency/{sampling,fastq,bam,comparison,policy,parquet_io,pipeline,metrics,distributions,models}.py`, `policies/example-illustrative.yaml`, `tests/**` (7 files), `examples/make_examples.py`, `README.md`, `pyproject.toml`, `benchmarks/results-2026-10-21.{json,md}`, `benchmarks/render_results.py` |
+| Created | `docs/plans/20261021-165647_review-fixes.plan.qmd`, this report |
+
+1. Packages: `duckdb` added to the `dev` extra (tests import it); no environment changes.
+2. Git: commits `fix: apply external review — correctness, safety, and BAM performance` plus the final results/docs commit on `main`.
+
+#### evidence
+
+```
+level: high
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+`git log --oneline`; `git status` clean at commit time.
+
+:::
+
+## other
+
+None

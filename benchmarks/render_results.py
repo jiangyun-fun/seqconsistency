@@ -127,9 +127,12 @@ def main(argv: list[str] | None = None) -> int:
         "compare the PE and SE rows above for the measured overhead."
     )
     lines.append(
-        "3. BAM scanning is bound by pysam per-record object creation — an order "
-        "of magnitude slower per read than the vectorized FASTQ path. This is the "
-        "documented cost of correct flag/order/insert handling."
+        "3. BAM scanning is bound by pysam per-record object creation and "
+        "per-record attribute access (features, clipping, RG check). After the "
+        "reservoir batching fix it runs at roughly half the vectorized FASTQ "
+        "rate; before that fix a quadratic reservoir update dominated and made "
+        "it ~165x slower — a reminder to profile before attributing "
+        "bottlenecks."
     )
     lines.append(
         "4. Long reads cost ~10× short reads per base in wall time at the same "

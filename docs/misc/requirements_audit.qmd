@@ -40,3 +40,35 @@ Packages (pixi default env): numpy, scipy, pyarrow, pysam, pyyaml; dev: pytest,
 ruff, mypy, duckdb, pandas, types-pyyaml, scipy-stubs; editable self-install of
 seqconsistency. Environments: none beyond the project pixi default environment.
 Git: branch `main`, conventional commits for core, tests/docs, and final results.
+
+## Apply agreed external-review fixes
+
+```
+level: high
+date: 2026-10-21
+```
+
+### description
+
+Apply the agreed disposition of an external code review: uncalibrated thresholds must
+not approve, output collisions must cover every consumed input, the Phred+64
+heuristic tightened, BAM metrics selected by profile, SM/RG metadata reconciled,
+the quadratic BAM reservoir fixed, CASAVA contradictions detected, policy validation
+hardened, optional fastp evidence non-blocking, and two missed Phase-1 metrics
+(clipping, joint length/quality) added.
+
+### result
+
+1. Implemented all eight full-agreement fixes and three adjusted-design fixes with regression tests for each reviewer counterexample.
+2. Fixed the BAM reservoir (368 -> 61k records/s, 166x, measured) and re-ran the clean benchmark; corrected the previously wrong pysam attribution in the docs.
+3. Verified the full suite green, mypy and ruff clean, and all eight examples regenerated with corrected outcomes.
+4. Documented two review disagreements (Phase-2 sourmash/coverage; retained-fraction metric naming) with evidence.
+
+### change
+
+Files: updated 10 src modules, `policies/example-illustrative.yaml`, 7 test files,
+`examples/make_examples.py`, `README.md`, `pyproject.toml`,
+`benchmarks/results-2026-10-21.{json,md}` (re-measured),
+`benchmarks/render_results.py`; created `docs/plans/20261021-165647_review-fixes.plan.qmd`
+and `...20261021-170329_review-fixes.report.qmd` (html render untracked).
+Packages: duckdb -> pyproject dev extra. Git: `fix:` and docs commits on `main`.
