@@ -28,6 +28,7 @@ from __future__ import annotations
 import logging
 import time
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 
@@ -58,7 +59,7 @@ FLAG_SUPPL = 0x800
 HIST_FLUSH_RECORDS = 65536
 
 
-def _record_features(record) -> tuple[float, float, float, float, float]:
+def _record_features(record: Any) -> tuple[float, float, float, float, float]:
     """Per-read features for one eligible BAM record.
 
     Returns (length, gc_fraction, n_fraction, mean_quality_arithmetic,

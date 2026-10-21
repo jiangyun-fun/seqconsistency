@@ -211,7 +211,7 @@ def read_back(path: Path) -> pa.Table:
 
 
 @contextmanager
-def output_transaction(paths: list[Path]):
+def output_transaction(paths: list[Path]) -> Iterator[list[Path]]:
     """Collect published outputs; on failure remove everything this run created.
 
     Best-effort rollback only — multi-path publication cannot be fully transactional

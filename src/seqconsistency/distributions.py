@@ -8,6 +8,8 @@ values below ``edges[0]`` are underflow. Both are counted, never dropped.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 import numpy as np
 
 from seqconsistency.models import MAX_PHRED, Histogram
@@ -108,7 +110,7 @@ class HistogramAccumulator:
         self._underflow = 0
         self._n = 0
 
-    def add_values(self, values: np.ndarray | list[float]) -> None:
+    def add_values(self, values: np.ndarray | Sequence[float]) -> None:
         if len(values) == 0:
             return
         counts, overflow, underflow = bin_values(np.asarray(values, dtype=np.float64), self.edges)

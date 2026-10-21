@@ -167,6 +167,15 @@ def load_manifest(path: Path) -> ManifestLoadResult:
         platform = _string_field(row, "platform", where)
         read_type_raw = _string_field(row, "read_type", where)
         input_format_raw = _string_field(row, "input_format", where)
+        assert (
+            pool_group is not None
+            and sample_id is not None
+            and library_id is not None
+            and assay is not None
+            and platform is not None
+            and read_type_raw is not None
+            and input_format_raw is not None
+        )
         try:
             read_type = ReadType(read_type_raw)
         except ValueError:

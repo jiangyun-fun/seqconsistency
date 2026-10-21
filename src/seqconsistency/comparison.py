@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import itertools
 import math
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -28,6 +28,7 @@ from seqconsistency.models import (
     STRATUM_READS,
     STRATUM_SE,
     DatasetOutcome,
+    FastqFileStats,
     InputFormat,
     ReadType,
 )
@@ -134,9 +135,10 @@ def _fastq_sample(outcome: DatasetOutcome, stratum: str) -> dict[str, list[float
     return outcome.fastq.sample_r1  # SE
 
 
-def _fastq_stats(outcome: DatasetOutcome, stratum: str):
+def _fastq_stats(outcome: DatasetOutcome, stratum: str) -> FastqFileStats:
     assert outcome.fastq is not None
     if stratum == STRATUM_R2:
+        assert outcome.fastq.r2 is not None
         return outcome.fastq.r2
     return outcome.fastq.r1
 
@@ -445,8 +447,9 @@ def generate_pairs(dataset_ids: list[str]) -> list[tuple[str, str]]:
     return list(itertools.combinations(sorted(dataset_ids), 2))
 
 
-def count_total_pairs(groups: list[list[str]]) -> int:
-    return sum(math.comb(len(ids), 2) for ids in groups)
+def count_total_pairs(groups: list[Sequence[Any]]) -> int:
+    """Total unordered pairs across groups (each entry is one group's members)."""
+    return sum(math.comb(len(members), 2) for members in groups)
 
 
 def compare_group(

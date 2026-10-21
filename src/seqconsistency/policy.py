@@ -20,6 +20,7 @@ described as validated; calibration guidance is in the README.
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -171,6 +172,7 @@ def load_policy(path_or_text: Any) -> Policy:
             "distinct_library_ids",
             "distinct_processing_ids",
             "reference_mismatch",
+            "require_fastp_evidence",
         },
         "metadata",
     )
@@ -357,7 +359,7 @@ def _metadata_findings(
             )
         )
 
-    def distinct(values: list[str]) -> list[str]:
+    def distinct(values: Iterable[str]) -> list[str]:
         return sorted(set(values))
 
     samples = distinct(s.sample_id for s in specs)
@@ -519,9 +521,13 @@ def _reference_dictionary_findings(
         )
 
     if bams:
-        base = bams[0].bam.header.references
-        for other in bams[1:]:
-            refs = other.bam.header.references
+        first_bam = bams[0].bam
+        assert first_bam is not None
+        base = first_bam.header.references
+        for other in bams:
+            other_bam = other.bam
+            assert other_bam is not None
+            refs = other_bam.header.references
             names_a = [r[0] for r in base]
             names_b = [r[0] for r in refs]
             if names_a != names_b or [r[1] for r in base] != [r[1] for r in refs]:
@@ -566,7 +572,9 @@ def _reference_dictionary_findings(
         # Read-group collisions: same RG id with different definitions.
         seen: dict[str, tuple] = {}
         for o in bams:
-            for rg in o.bam.header.read_groups:
+            o_bam = o.bam
+            assert o_bam is not None
+            for rg in o_bam.header.read_groups:
                 rid = rg.get("ID", "")
                 sig = (rg.get("SM"), rg.get("LB"), rg.get("PL"), rg.get("PU"))
                 if rid in seen and seen[rid] != sig:
@@ -693,10 +701,10 @@ def _technical_assessment(
             )
             finding(
                 "TECH_THRESHOLD_EXCEEDED",
-                f"{row['metric']} distance {row['value']:.6g} between "
-                f"{row['dataset_a']!r} and {row['dataset_b']!r} exceeds the policy "
-                f"maximum {row['threshold']:.6g} ({row['method']}, stratum "
-                f"{row['stratum']}).",
+                f"{row.get('metric')} distance {row['value']:.6g} between "
+                f"{row.get('dataset_a')!r} and {row.get('dataset_b')!r} exceeds "
+                f"the policy maximum {row['threshold']:.6g} "
+                f"({row.get('method')}, stratum {row.get('stratum')}).",
                 severity,
                 "Inspect the distributions; if the shift is expected, recalibrate "
                 "the threshold with genuine between-run data; otherwise do not pool.",
@@ -704,12 +712,22 @@ def _technical_assessment(
             )
         elif row["status"] == STATUS_NO_THRESHOLD and policy.require_thresholds:
             status = _worse(status, CheckStatus.MISSING_EVIDENCE)
+            finding(
+                "TECH_NO_THRESHOLD_CONFIGURED",
+                f"No policy threshold for metric {row.get('metric')!r} "
+                f"(stratum {row.get('stratum')}); with require_thresholds the "
+                "group cannot be COMPATIBLE on uncalibrated distances.",
+                Severity.WARNING,
+                "Add a calibrated threshold for this metric, or set "
+                "technical.require_thresholds false knowingly.",
+                row,
+            )
         elif row["status"] == STATUS_NO_THRESHOLD and not policy.require_thresholds:
             finding(
                 "TECH_NO_THRESHOLD_CONFIGURED",
-                f"No policy threshold for metric {row['metric']!r} (stratum "
-                f"{row['stratum']}); the distance {row['value']:.6g} is reported "
-                "but not assessed.",
+                f"No policy threshold for metric {row.get('metric')!r} "
+                f"(stratum {row.get('stratum')}); the distance "
+                f"{row['value']:.6g} is reported but not assessed.",
                 Severity.INFO,
                 "Add a calibrated threshold before relying on this metric.",
                 row,

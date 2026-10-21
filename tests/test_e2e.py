@@ -1,0 +1,477 @@
+"""End-to-end CLI runs: exit codes, reproducibility, schemas, multiple groups."""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import pyarrow.parquet as pq
+
+from helpers import (
+    make_bam,
+    make_records,
+    write_fastq,
+    write_parquet_manifest,
+    write_pe,
+    write_policy,
+    write_tsv_manifest,
+)
+
+
+def _pe_group(tmp_path: Path, stem: str, n: int = 2000, gc: float = 0.5, seed: int = 1):
+    return write_pe(tmp_path, stem, n, gc=gc, seed=seed, length=100)
+
+
+def _paired_manifest(tmp_path: Path, groups: list[tuple[str, list]]) -> Path:
+    rows = []
+    for group, files in groups:
+        for i, (p1, p2) in enumerate(files):
+            rows.append(
+                {
+                    "dataset_id": f"{group}_{i}",
+                    "pool_group": group,
+                    "sample_id": "s1",
+                    "library_id": "l1",
+                    "assay": "WGS",
+                    "platform": "ILLUMINA",
+                    "read_type": "paired_short",
+                    "input_format": "fastq",
+                    "path1": str(p1),
+                    "path2": str(p2),
+                    "processing_id": "p1",
+                }
+            )
+    return write_tsv_manifest(tmp_path / "m.tsv", rows)
+
+
+def test_cli_end_to_end_compatible(tmp_path: Path):
+    from helpers import run_cli
+
+    a = _pe_group(tmp_path, "a", seed=10)
+    b = _pe_group(tmp_path, "b", seed=11)
+    manifest = _paired_manifest(tmp_path, [("g1", [a, b])])
+    policy = write_policy(tmp_path / "p.yaml")
+    result, out, prov = run_cli(tmp_path / "run", manifest, policy, workers=2, expect_code=0)
+    decisions = pq.read_table(out["decisions"]).to_pylist()
+    assert len(decisions) == 1
+    assert decisions[0]["overall_decision"] == "COMPATIBLE"
+    provenance = json.loads(prov.read_text())
+    assert provenance["policy"]["policy_id"] == "test-policy"
+    assert len(provenance["inputs"]) == 2
+    # All five parquet outputs exist and are non-empty.
+    for name, path in out.items():
+        assert pq.read_table(path).num_rows > 0, name
+    # Comparisons carry the expected metric set for paired_short.
+    comparisons = pq.read_table(out["comparisons"]).to_pylist()
+    metrics = {r["metric"] for r in comparisons}
+    assert {
+        "read_length",
+        "gc_content",
+        "base_quality",
+        "nucleotide_composition",
+        "mean_read_quality",
+    } <= metrics
+    assert all(r["dataset_a"] < r["dataset_b"] for r in comparisons)
+
+
+def test_cli_shifted_gc_produces_review_exit_1(tmp_path: Path):
+    from helpers import run_cli
+
+    a = _pe_group(tmp_path, "a", gc=0.40, seed=20)
+    b = _pe_group(tmp_path, "b", gc=0.62, seed=21)
+    manifest = _paired_manifest(tmp_path, [("g1", [a, b])])
+    policy = write_policy(tmp_path / "p.yaml")
+    result, out, _ = run_cli(tmp_path / "run", manifest, policy, expect_code=1)
+    decisions = pq.read_table(out["decisions"]).to_pylist()
+    assert decisions[0]["overall_decision"] == "REVIEW"
+    findings = pq.read_table(out["findings"]).to_pylist()
+    assert any(
+        f["reason_code"] == "TECH_THRESHOLD_EXCEEDED" and f["evidence_metric"] == "gc_content"
+        for f in findings
+    )
+
+
+def test_cli_genuine_incompatibility_exit_1(tmp_path: Path):
+    # Different declared samples -> INCOMPATIBLE (exit 1, a scientific result).
+    from helpers import run_cli
+
+    a = _pe_group(tmp_path, "a", seed=30)
+    b = _pe_group(tmp_path, "b", seed=31)
+    manifest = write_tsv_manifest(
+        tmp_path / "m.tsv",
+        [
+            {
+                "dataset_id": "a",
+                "pool_group": "g",
+                "sample_id": "s1",
+                "library_id": "l",
+                "assay": "WGS",
+                "platform": "I",
+                "read_type": "paired_short",
+                "input_format": "fastq",
+                "path1": str(a[0]),
+                "path2": str(a[1]),
+            },
+            {
+                "dataset_id": "b",
+                "pool_group": "g",
+                "sample_id": "DONOR_X",
+                "library_id": "l",
+                "assay": "WGS",
+                "platform": "I",
+                "read_type": "paired_short",
+                "input_format": "fastq",
+                "path1": str(b[0]),
+                "path2": str(b[1]),
+            },
+        ],
+    )
+    policy = write_policy(tmp_path / "p.yaml")
+    result, out, _ = run_cli(tmp_path / "run", manifest, policy, expect_code=1)
+    decisions = pq.read_table(out["decisions"]).to_pylist()
+    assert decisions[0]["overall_decision"] == "INCOMPATIBLE"
+    assert decisions[0]["identity_evidence_level"] == "conflicting_declarations"
+
+
+def test_cli_insufficient_evidence_exit_1(tmp_path: Path):
+    # Policy demands independent identity verification, which v1 cannot do.
+    from helpers import run_cli
+
+    a = _pe_group(tmp_path, "a", seed=40)
+    b = _pe_group(tmp_path, "b", seed=41)
+    manifest = _paired_manifest(tmp_path, [("g1", [a, b])])
+    policy_text = Path(__file__).parent / ".." / "policies" / "example-illustrative.yaml"
+    policy = write_policy(
+        tmp_path / "p.yaml",
+        policy_text.read_text().replace(
+            "require_independent_verification: false",
+            "require_independent_verification: true",
+        ),
+    )
+    result, out, _ = run_cli(tmp_path / "run", manifest, policy, expect_code=1)
+    decisions = pq.read_table(out["decisions"]).to_pylist()
+    assert decisions[0]["overall_decision"] == "INSUFFICIENT_EVIDENCE"
+
+
+def test_two_groups_in_one_invocation(tmp_path: Path):
+    from helpers import run_cli
+
+    a = _pe_group(tmp_path, "a", seed=50)
+    b = _pe_group(tmp_path, "b", seed=51)
+    c = _pe_group(tmp_path, "c", seed=52)
+    d = _pe_group(tmp_path, "d", gc=0.61, seed=53)
+    manifest = _paired_manifest(tmp_path, [("g1", [a, b]), ("g2", [c, d])])
+    policy = write_policy(tmp_path / "p.yaml")
+    result, out, _ = run_cli(
+        tmp_path / "run", manifest, policy, workers=4, threads=4, expect_code=1
+    )
+    decisions = pq.read_table(out["decisions"]).to_pylist()
+    by_group = {d["pool_group"]: d for d in decisions}
+    assert by_group["g1"]["overall_decision"] == "COMPATIBLE"
+    assert by_group["g2"]["overall_decision"] == "REVIEW"
+
+
+def test_merged_short_group_end_to_end(tmp_path: Path):
+    import numpy as np
+
+    from helpers import run_cli
+
+    rng = np.random.default_rng(60)
+    files = []
+    for i, base_len in enumerate((220, 225)):
+        lengths = rng.integers(base_len - 20, base_len + 20, size=400)
+        files.append(
+            write_fastq(
+                tmp_path / f"m{i}.fastq",
+                make_records(400, lengths=lengths, seed=60 + i),
+            )
+        )
+    rows = [
+        {
+            "dataset_id": f"m{i}",
+            "pool_group": "g",
+            "sample_id": "s",
+            "library_id": "l",
+            "assay": "WGS",
+            "platform": "I",
+            "read_type": "merged_short",
+            "input_format": "fastq",
+            "path1": str(f),
+        }
+        for i, f in enumerate(files)
+    ]
+    manifest = write_tsv_manifest(tmp_path / "m.tsv", rows)
+    policy = write_policy(tmp_path / "p.yaml")
+    result, out, _ = run_cli(tmp_path / "run", manifest, policy, expect_code=1)
+    decisions = pq.read_table(out["decisions"]).to_pylist()
+    assert decisions[0]["overall_decision"] in ("REVIEW", "INSUFFICIENT_EVIDENCE")
+    # merge-rate comparison reported missing fastp evidence.
+    comparisons = pq.read_table(out["comparisons"]).to_pylist()
+    assert any(
+        r["metric"] == "merge_retained_fraction" and r["status"] == "MISSING_EVIDENCE"
+        for r in comparisons
+    )
+
+
+def test_long_read_group_end_to_end(tmp_path: Path):
+    import numpy as np
+
+    from helpers import run_cli
+
+    files = []
+    for i in range(2):
+        lengths = np.random.default_rng(70 + i).lognormal(9.0, 0.6, 500).astype(int)
+        lengths = np.clip(lengths, 200, 100000)
+        files.append(
+            write_fastq(
+                tmp_path / f"ont{i}.fastq",
+                make_records(500, lengths=lengths, seed=70 + i),
+            )
+        )
+    rows = [
+        {
+            "dataset_id": f"o{i}",
+            "pool_group": "g",
+            "sample_id": "s",
+            "library_id": "l",
+            "assay": "WGS",
+            "platform": "ONT",
+            "read_type": "ont",
+            "input_format": "fastq",
+            "path1": str(f),
+        }
+        for i, f in enumerate(files)
+    ]
+    manifest = write_tsv_manifest(tmp_path / "m.tsv", rows)
+    policy = write_policy(tmp_path / "p.yaml")
+    result, out, _ = run_cli(tmp_path / "run", manifest, policy, expect_code=1)
+    comparisons = pq.read_table(out["comparisons"]).to_pylist()
+    assert {r["metric"] for r in comparisons} == {
+        "read_length",
+        "mean_read_quality",
+        "gc_content",
+        "n_content",
+    }
+
+
+def test_bam_group_end_to_end(tmp_path: Path):
+    from helpers import run_cli
+
+    b1 = make_bam(tmp_path / "b1.bam", n=400, seed=80)
+    b2 = make_bam(tmp_path / "b2.bam", n=400, seed=81)
+    rows = [
+        {
+            "dataset_id": f"b{i}",
+            "pool_group": "g",
+            "sample_id": "s",
+            "library_id": "l",
+            "assay": "WGS",
+            "platform": "ILLUMINA",
+            "read_type": "paired_short",
+            "input_format": "bam",
+            "path1": str(p),
+            "reference_id": "hg38",
+        }
+        for i, p in enumerate((b1, b2))
+    ]
+    manifest = write_tsv_manifest(tmp_path / "m.tsv", rows)
+    policy = write_policy(tmp_path / "p.yaml")
+    result, out, _ = run_cli(tmp_path / "run", manifest, policy, expect_code=1)
+    comparisons = pq.read_table(out["comparisons"]).to_pylist()
+    metrics = {r["metric"] for r in comparisons}
+    assert {"read_length", "gc_content", "mapq", "insert_size"} <= metrics
+    decisions = pq.read_table(out["decisions"]).to_pylist()
+    # Identity accepted from metadata alone (declared, not verified).
+    assert decisions[0]["identity_evidence_level"] == "declared_not_verified"
+
+
+def test_reproducible_across_worker_counts(tmp_path: Path):
+    from helpers import run_cli
+
+    a = _pe_group(tmp_path, "a", seed=90)
+    b = _pe_group(tmp_path, "b", seed=91)
+    manifest = _paired_manifest(tmp_path, [("g1", [a, b])])
+    policy = write_policy(tmp_path / "p.yaml")
+    r1, out1, _ = run_cli(tmp_path / "run1", manifest, policy, workers=1, threads=1, expect_code=0)
+    r2, out2, _ = run_cli(tmp_path / "run2", manifest, policy, workers=4, threads=4, expect_code=0)
+    import pandas as pd
+
+    for name in out1:
+        df1 = pq.read_table(out1[name]).to_pandas()
+        df2 = pq.read_table(out2[name]).to_pandas()
+        pd.testing.assert_frame_equal(df1, df2, check_dtype=False)  # NaN==NaN aware
+
+
+def test_fixed_seed_reproducibility(tmp_path: Path):
+    from helpers import run_cli
+
+    a = _pe_group(tmp_path, "a", seed=95)
+    b = _pe_group(tmp_path, "b", seed=96)
+    manifest = _paired_manifest(tmp_path, [("g1", [a, b])])
+    policy = write_policy(tmp_path / "p.yaml")
+    _, out1, _ = run_cli(tmp_path / "r1", manifest, policy, seed=123, expect_code=0)
+    _, out2, _ = run_cli(tmp_path / "r2", manifest, policy, seed=123, expect_code=0)
+    m1 = pq.read_table(out1["metrics"]).to_pylist()
+    m2 = pq.read_table(out2["metrics"]).to_pylist()
+    assert m1 == m2
+
+
+def test_max_pairs_guard_aborts_before_processing(tmp_path: Path):
+
+    from helpers import run_cli
+
+    groups = [
+        (f"g{i}", [_pe_group(tmp_path, f"a{i}_{j}", 20, seed=100 + i * 10 + j) for j in range(6)])
+        for i in range(3)
+    ]
+    manifest = _paired_manifest(tmp_path, groups)  # 3 groups x C(6,2)=15 pairs = 45
+    policy = write_policy(tmp_path / "p.yaml")
+    result, out, _ = run_cli(tmp_path / "run", manifest, policy, max_pairs=10, expect_code=2)
+    assert "exceeding --max-pairs" in result.stderr
+    for path in out.values():
+        assert not path.exists()
+
+
+def test_report_html_written_when_requested(tmp_path: Path):
+    import subprocess
+    import sys
+
+    from helpers import run_cli
+
+    a = _pe_group(tmp_path, "a", seed=110)
+    b = _pe_group(tmp_path, "b", seed=111)
+    manifest = _paired_manifest(tmp_path, [("g1", [a, b])])
+    policy = write_policy(tmp_path / "p.yaml")
+    outdir = tmp_path / "run"
+    result, out, _ = run_cli(outdir, manifest, policy, expect_code=0)
+    report = outdir / "report.html"
+    r = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "seqconsistency.cli",
+            "check",
+            "--manifest",
+            str(manifest),
+            "--policy",
+            str(policy),
+            "--metrics-out",
+            str(out["metrics"]),
+            "--distributions-out",
+            str(out["distributions"]),
+            "--comparisons-out",
+            str(out["comparisons"]),
+            "--findings-out",
+            str(out["findings"]),
+            "--decisions-out",
+            str(out["decisions"]),
+            "--provenance-out",
+            str(outdir / "provenance2.json"),
+            "--report-out",
+            str(report),
+            "--overwrite",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert r.returncode == 0, r.stderr
+    html_text = report.read_text()
+    assert "seqconsistency pooling-consistency report" in html_text
+    assert "COMPATIBLE" in html_text
+    assert "not independently verified" in html_text
+    assert "http" not in html_text.split("<style>")[0]  # self-contained head
+
+
+def test_parquet_manifest_end_to_end(tmp_path: Path):
+    from helpers import run_cli
+
+    a = _pe_group(tmp_path, "a", seed=120)
+    b = _pe_group(tmp_path, "b", seed=121)
+    rows = [
+        {
+            "dataset_id": i,
+            "pool_group": "g",
+            "sample_id": "s",
+            "library_id": "l",
+            "assay": "WGS",
+            "platform": "I",
+            "read_type": "paired_short",
+            "input_format": "fastq",
+            "path1": str(p1),
+            "path2": str(p2),
+            "processing_id": "p",
+        }
+        for i, (p1, p2) in zip(("a", "b"), (a, b), strict=True)
+    ]
+    manifest = write_parquet_manifest(tmp_path / "m.parquet", rows)
+    policy = write_policy(tmp_path / "p.yaml")
+    run_cli(tmp_path / "run", manifest, policy, expect_code=0)
+
+
+def test_overwrite_flag_allows_rerun(tmp_path: Path):
+    from helpers import run_cli
+
+    a = _pe_group(tmp_path, "a", seed=130)
+    b = _pe_group(tmp_path, "b", seed=131)
+    manifest = _paired_manifest(tmp_path, [("g1", [a, b])])
+    policy = write_policy(tmp_path / "p.yaml")
+    run_cli(tmp_path / "run", manifest, policy, expect_code=0)
+    import subprocess
+    import sys
+
+    outdir = tmp_path / "run"
+    r = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "seqconsistency.cli",
+            "check",
+            "--manifest",
+            str(manifest),
+            "--policy",
+            str(policy),
+            "--metrics-out",
+            str(outdir / "metrics.parquet"),
+            "--distributions-out",
+            str(outdir / "distributions.parquet"),
+            "--comparisons-out",
+            str(outdir / "comparisons.parquet"),
+            "--findings-out",
+            str(outdir / "findings.parquet"),
+            "--decisions-out",
+            str(outdir / "decisions.parquet"),
+            "--provenance-out",
+            str(outdir / "provenance.json"),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert r.returncode == 2 and "exists" in r.stderr
+    r2 = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "seqconsistency.cli",
+            "check",
+            "--manifest",
+            str(manifest),
+            "--policy",
+            str(policy),
+            "--metrics-out",
+            str(outdir / "metrics.parquet"),
+            "--distributions-out",
+            str(outdir / "distributions.parquet"),
+            "--comparisons-out",
+            str(outdir / "comparisons.parquet"),
+            "--findings-out",
+            str(outdir / "findings.parquet"),
+            "--decisions-out",
+            str(outdir / "decisions.parquet"),
+            "--provenance-out",
+            str(outdir / "provenance.json"),
+            "--overwrite",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert r2.returncode == 0, r2.stderr

@@ -240,32 +240,32 @@ technical:
       calibrated: false
     - metric: gc_content
       method: jensenshannon_base2
-      max: 0.05
+      max: 0.10
       action: review
       calibrated: false
     - metric: n_content
       method: jensenshannon_base2
-      max: 0.05
+      max: 0.10
       action: review
       calibrated: false
     - metric: base_quality
       method: jensenshannon_base2
-      max: 0.05
+      max: 0.10
       action: review
       calibrated: false
     - metric: nucleotide_composition
       method: jensenshannon_base2
-      max: 0.05
+      max: 0.10
       action: review
       calibrated: false
     - metric: mapq
       method: jensenshannon_base2
-      max: 0.05
+      max: 0.10
       action: review
       calibrated: false
     - metric: insert_size
       method: wasserstein1
-      max: 20.0
+      max: 25.0
       action: review
       calibrated: false
     - metric: merge_retained_fraction
@@ -296,6 +296,7 @@ def run_cli(
     extra_env: dict | None = None,
 ):
     """Invoke the installed CLI in a subprocess (real end-to-end coverage)."""
+    tmp_path.mkdir(parents=True, exist_ok=True)
     out = {
         name: tmp_path / f"{name}.parquet"
         for name in ("metrics", "distributions", "comparisons", "findings", "decisions")

@@ -12,6 +12,7 @@ fixed internal block size.
 from __future__ import annotations
 
 import hashlib
+import math
 
 import numpy as np
 
@@ -44,7 +45,7 @@ class FeatureReservoir:
         self._rng = rng
         self._keys: np.ndarray | None = None  # shape (k,)
         self._rows: np.ndarray | None = None  # shape (k, n_features)
-        self._threshold = np.inf  # current k-th smallest key
+        self._threshold: float = math.inf  # current k-th smallest key
         self.offered = 0
 
     def add_block(self, rows: np.ndarray, keys: np.ndarray | None = None) -> None:
@@ -60,26 +61,30 @@ class FeatureReservoir:
         if n == 0:
             return
         self.offered += n
+        key_arr: np.ndarray
         if keys is None:
             if self._rng is None:
                 raise ValueError("reservoir has no rng and no keys were supplied")
-            keys = self._rng.random(n)
+            key_arr = np.asarray(self._rng.random(n), dtype=np.float64)
         else:
-            keys = np.asarray(keys, dtype=np.float64)
+            key_arr = np.asarray(keys, dtype=np.float64)
         if self.capacity == 0:
             return
+        row_arr = rows.astype(np.float64, copy=False)
         if self._keys is None:
-            self._keys = keys
-            self._rows = rows.astype(np.float64, copy=True)
+            self._keys = key_arr
+            self._rows = row_arr.copy()
         else:
-            if self._keys.size >= self.capacity:
-                keep = keys < self._threshold
-                if not keep.any():
+            cur_keys = self._keys
+            if cur_keys.size >= self.capacity:
+                keep = key_arr < self._threshold
+                if not bool(np.any(keep)):
                     return
-                keys = keys[keep]
-                rows = rows[keep]
-            self._keys = np.concatenate([self._keys, keys])
-            self._rows = np.concatenate([self._rows, rows.astype(np.float64, copy=False)])
+                key_arr = key_arr[keep]
+                row_arr = row_arr[keep]
+            self._keys = np.concatenate([cur_keys, key_arr])
+            self._rows = np.concatenate([self._rows, row_arr])
+        assert self._keys is not None and self._rows is not None
         if self._keys.size > self.capacity:
             sel = np.argpartition(self._keys, self.capacity - 1)[: self.capacity]
             self._keys = self._keys[sel]

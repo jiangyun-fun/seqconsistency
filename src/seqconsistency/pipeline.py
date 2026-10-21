@@ -90,8 +90,6 @@ def validate_output_paths(config: CheckConfig, input_paths: list[Path]) -> None:
         if rp in seen:
             raise PathError(f"duplicate output path: {out} and {seen[rp]} resolve to the same file")
         seen[rp] = str(out)
-        if out.exists() and not config.overwrite:
-            raise PathError(f"output file exists: {out} (pass --overwrite to replace it)")
         if not out.parent.is_dir():
             raise PathError(
                 f"output parent directory does not exist: {out.parent} "
@@ -99,6 +97,8 @@ def validate_output_paths(config: CheckConfig, input_paths: list[Path]) -> None:
             )
         if not os.access(out.parent, os.W_OK):
             raise PathError(f"output parent directory is not writable: {out.parent}")
+    # Collision check runs before the existence check so an input path is never
+    # reported as "overwriteable".
     input_real = {os.path.realpath(p) for p in input_paths}
     for out in outputs:
         if os.path.realpath(out) in input_real:
@@ -106,6 +106,10 @@ def validate_output_paths(config: CheckConfig, input_paths: list[Path]) -> None:
                 f"output path {out} collides with an input file — seqconsistency "
                 "never overwrites input data"
             )
+    if not config.overwrite:
+        for out in outputs:
+            if out.exists():
+                raise PathError(f"output file exists: {out} (pass --overwrite to replace it)")
 
 
 def _scan_one(spec: DatasetSpec, sampling: SamplingConfig, sample_size: int) -> DatasetOutcome:
@@ -116,6 +120,7 @@ def _scan_one(spec: DatasetSpec, sampling: SamplingConfig, sample_size: int) -> 
     else:
         bam = None
         if spec.is_paired_fastq:
+            assert spec.path2 is not None
             r1, r2, pairing, s1, s2, pairs, sampled = scan_fastq_paired(
                 spec.dataset_id,
                 spec.path1,

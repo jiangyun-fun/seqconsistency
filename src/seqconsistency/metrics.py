@@ -381,7 +381,7 @@ def _bam_rows(dataset_id: str, pool_group: str, outcome: DatasetOutcome) -> list
         float(f.records_missing_qualities),
         "records",
         f.records_missing_qualities,
-        f.eligible_observations,
+        bam.eligible_observations,
     )
     add(
         "records",
@@ -513,7 +513,7 @@ def metric_rows(outcome: DatasetOutcome) -> list[dict[str, Any]]:
                 outcome.fastq.sampled_count,
             )
         )
-        if outcome.fastq.r2 is not None:
+        if outcome.fastq.r2 is not None and outcome.fastq.sample_r2 is not None:
             rows.extend(
                 _fastq_stratum_rows(spec.dataset_id, spec.pool_group, STRATUM_R2, outcome.fastq.r2)
             )

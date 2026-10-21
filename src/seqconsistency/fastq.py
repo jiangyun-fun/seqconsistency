@@ -26,7 +26,7 @@ import zlib
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import IO
+from typing import IO, cast
 
 import numpy as np
 
@@ -48,9 +48,11 @@ _ZLIB_ERROR = zlib.error
 logger = logging.getLogger(__name__)
 
 #: Batch is flushed at whichever limit comes first: record count or sequence bytes.
-#: 16 MiB of bases keeps every transient numpy buffer far below 2**31 elements.
+#: 8 MiB of bases keeps every transient numpy buffer far below 2**31 elements while
+#: amortizing per-batch vectorization overhead (see benchmarks for the measured
+#: throughput and peak-memory trade-off).
 BATCH_RECORDS = 16384
-BATCH_BYTES = 1 << 24
+BATCH_BYTES = 1 << 23
 #: Read chunk for line splitting.
 READ_CHUNK_BYTES = 1 << 23  # 8 MiB
 
@@ -89,7 +91,7 @@ class RawBatch:
 
 def _open_fastq(path: Path) -> IO[bytes]:
     if path.name.endswith(".gz"):
-        return gzip.open(path, "rb")
+        return cast("IO[bytes]", gzip.open(path, "rb"))
     return open(path, "rb")
 
 
@@ -241,7 +243,7 @@ class StrandStats:
         st = self.stats
 
         if qual_arr.size and (
-            int(qual_arr.min()) < MIN_QUAL_BYTE or int(qual_arr.max()) > MAX_QUAL_BYTE
+            int(np.min(qual_arr)) < MIN_QUAL_BYTE or int(np.max(qual_arr)) > MAX_QUAL_BYTE
         ):
             self._raise_bad_quality_byte(qual_arr, batch, lengths)
 
@@ -250,7 +252,7 @@ class StrandStats:
         total_bases = int(ends[-1]) if lengths.size else 0
 
         cat = CAT_LUT[seq_arr]
-        if cat.size and int(cat.max()) == 255:
+        if cat.size and int(np.max(cat)) == 255:
             self._raise_bad_alphabet(seq_arr, batch, ends)
 
         per_read_counts = np.empty((lengths.size, 5), dtype=np.int64)
@@ -297,8 +299,8 @@ class StrandStats:
         st.sum_lengths += int(lengths.sum())
         st.sum_sq_lengths += int((lengths * lengths).sum())
         if qual_arr.size:
-            st.min_qual_byte = min(st.min_qual_byte, int(qual_arr.min()))
-            st.max_qual_byte = max(st.max_qual_byte, int(qual_arr.max()))
+            st.min_qual_byte = min(st.min_qual_byte, int(np.min(qual_arr)))
+            st.max_qual_byte = max(st.max_qual_byte, int(np.max(qual_arr)))
         hist = np.bincount(qual_arr, minlength=127)[33:127]
         st.base_qual_counts = (np.asarray(st.base_qual_counts) + hist).tolist()
         valid_q = np.isfinite(meanq_arith)
@@ -436,7 +438,7 @@ def scan_fastq_single(
     reservoir = FeatureReservoir(sample_size)
     for batch in iter_fastq_batches(path):
         features = strand.add_batch(batch)
-        reservoir.add_block(features, keys=rng.random(features.shape[0]))
+        reservoir.add_block(features, keys=np.asarray(rng.random(features.shape[0])))
     stats = strand.finalize()
     return stats, reservoir.sample(), stats.total_reads, reservoir.sampled_count
 

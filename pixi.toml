@@ -12,6 +12,7 @@ lint = "ruff check src tests benchmarks"
 format = "ruff format src tests benchmarks"
 typecheck = "mypy"
 smoke = "seqconsistency --version"
+bench = "python benchmarks/bench.py"
 
 [dependencies]
 python = "3.12.*"
@@ -23,6 +24,10 @@ pyyaml = ">=6.0.3,<7"
 pytest = ">=9.1.1,<10"
 ruff = ">=0.17.1,<0.18"
 mypy = ">=2.4.0,<3"
+duckdb = ">=1.5.6,<2"
+pandas = ">=3.0.6,<4"
 
 [pypi-dependencies]
 seqconsistency = { path = ".", editable = true }
+types-pyyaml = ">=6.0.12.20260906, <7"
+scipy-stubs = ">=1.18.1.1, <2"

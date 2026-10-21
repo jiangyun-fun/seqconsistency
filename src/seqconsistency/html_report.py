@@ -87,7 +87,9 @@ def _mini_hist_svg(hist: Any) -> str:
 def _hist_for(outcome: DatasetOutcome, stratum: str) -> Any:
     if outcome.fastq is not None:
         st = outcome.fastq.r2 if stratum == "R2" else outcome.fastq.r1
-        return st.length_hist if st.length_hist else None
+        if st is None:
+            return None
+        return st.length_hist if st.length_hist is not None else None
     if outcome.bam is not None:
         return outcome.bam.length_hist
     return None
