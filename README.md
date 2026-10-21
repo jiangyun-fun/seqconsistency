@@ -382,9 +382,16 @@ Nucleotide composition is categorical. Per-cycle rows use absolute cycles
 ## Statistical distances
 
 - **Wasserstein-1** (`wasserstein1`): empirical, on the per-read sample of each
-  dataset (`scipy.stats.wasserstein_distance`). Units: bp (lengths), Phred
-  (qualities). Undefined per-read values (NaN) are excluded pairwise; observation
-  counts after exclusion are reported.
+  dataset. Each dataset's sample is finite-filtered and sorted **once**; pairs are
+  compared with an exact sorted-input implementation of the same quantity SciPy
+  computes (`statistics.wasserstein_distance_sorted`, method version
+  `sorted-merge-w1-jsd-base2-v2`) — SciPy re-sorts both inputs on every call, which
+  dominated comparison cost for large groups. Equivalence against
+  `scipy.stats.wasserstein_distance` is locked by test (random sizes, heavy ties,
+  identical arrays); the reference implementation remains available in
+  `statistics.wasserstein_distance`. Units: bp (lengths), Phred (qualities).
+  Undefined per-read values (NaN) are excluded pairwise; observation counts after
+  exclusion are reported.
 - **Jensen–Shannon distance** (`jensenshannon_base2`): the actual JS **distance**
   (square root of the divergence), logarithm base 2, bounded [0, 1]
   (`scipy.spatial.distance.jensenshannon`). Inputs are count histograms over the

@@ -40,7 +40,7 @@ from seqconsistency.models import (
 from seqconsistency.statistics import (
     STATS_VERSION,
     jensen_shannon_distance,
-    wasserstein_distance,
+    wasserstein_distance_sorted,
 )
 
 #: Comparison status values (stable strings, part of the output schema).
@@ -192,11 +192,12 @@ def _fastq_stats(outcome: DatasetOutcome, stratum: str) -> FastqFileStats:
 class _Prepared:
     """Per-dataset reusable comparison inputs, computed once per group.
 
-    Wasserstein features are finite-filtered once; sample-based JSD histograms are
-    built once — pairs then reuse them instead of re-converting per partner.
+    Wasserstein features are finite-filtered and **sorted** once, so every pair
+    uses the sorted-input distance (statistics.wasserstein_distance_sorted)
+    without re-sorting per partner; sample-based JSD histograms are built once.
     """
 
-    w: dict[tuple[str, str], np.ndarray]  # (metric, stratum) -> finite sample
+    w: dict[tuple[str, str], np.ndarray]  # (metric, stratum) -> sorted finite sample
     jsd: dict[tuple[str, str], np.ndarray]  # (metric, stratum) -> counts
 
 
@@ -210,7 +211,7 @@ def _prepare_dataset(
             key = (d.metric, stratum)
             if d.method == METHOD_WASSERSTEIN:
                 arr = _raw_wasserstein(outcome, d.metric, stratum)
-                w[key] = arr[np.isfinite(arr)]
+                w[key] = np.sort(arr[np.isfinite(arr)])
             elif d.method == METHOD_JSD:
                 h = _hist_for(outcome, d.metric, stratum)
                 jsd[key] = np.asarray(h.counts if h is not None else [], dtype=np.float64)
@@ -369,7 +370,7 @@ def _compare_one(
         na, nb = int(va.size), int(vb.size)
         if na < effective_min or nb < effective_min:
             return _insufficient_row(pool_group, a, b, component, stratum, definition, na, nb)
-        value = wasserstein_distance(va, vb, definition.metric)
+        value = wasserstein_distance_sorted(va, vb, definition.metric)
     elif definition.method == METHOD_JSD:
         ha = prepared[a.spec.dataset_id].jsd[(definition.metric, stratum)]
         hb = prepared[b.spec.dataset_id].jsd[(definition.metric, stratum)]
