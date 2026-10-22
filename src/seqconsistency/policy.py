@@ -612,6 +612,20 @@ def _metadata_findings(
             Severity.INCOMPATIBLE,
             "Pool only datasets aligned to the same reference.",
         )
+    elif len(reference_ids) > 1:
+        # reference_mismatch: review — the declared references conflict, but
+        # the policy says a human decides: warn and withhold approval without
+        # failing the group (and never downgrade an existing FAIL).
+        if status == CheckStatus.PASS:
+            status = CheckStatus.REVIEW
+        finding(
+            "GROUP_DIFFERENT_REFERENCES",
+            f"Pooling group {group!r} declares different reference_id values "
+            f"{sorted(set(reference_ids))}; the policy marks this for review.",
+            Severity.WARNING,
+            "Confirm the datasets are intentionally aligned to different "
+            "references before pooling.",
+        )
     return status, findings
 
 

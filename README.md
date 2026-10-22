@@ -122,7 +122,8 @@ metadata:
   same_assay_required: true
   distinct_library_ids: review       # allowed | review | incompatible
   distinct_processing_ids: review
-  reference_mismatch: incompatible   # review | incompatible
+  reference_mismatch: incompatible   # review | incompatible; review warns
+                                      # (GROUP_DIFFERENT_REFERENCES) and sets REVIEW
   require_fastp_evidence: false
 technical:
   min_observations: 1000

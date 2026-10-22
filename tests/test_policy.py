@@ -556,3 +556,51 @@ def test_bam_undefined_rg_records_reported():
     id_status, md_status, findings = _bam_sample_metadata_findings([a])
     assert md_status is CheckStatus.REVIEW
     assert any(f.reason_code == "BAM_UNDEFINED_RG_RECORDS" for f in findings)
+
+
+def test_reference_mismatch_review_warns_instead_of_nothing():
+    # Review round 5 (also found independently by a parallel-session audit):
+    # reference_mismatch: review previously did NOTHING — differing manifest
+    # reference_id values silently kept an otherwise passing group COMPATIBLE.
+    # The review action must warn and withhold approval without failing.
+    from pathlib import Path
+
+    from seqconsistency.models import DatasetOutcome, DatasetSpec, InputFormat, ReadType
+
+    def bam_outcome(ds: str, ref: str) -> DatasetOutcome:
+        spec = DatasetSpec(
+            dataset_id=ds,
+            pool_group="g",
+            sample_id="s1",
+            library_id="l1",
+            assay="WGS",
+            platform="ILLUMINA",
+            read_type=ReadType.PAIRED_SHORT,
+            input_format=InputFormat.BAM,
+            path1=Path("/dev/null"),
+            path2=None,
+            processing_id="p",
+            reference_id=ref,
+            fastp_json=None,
+        )
+        return DatasetOutcome(spec=spec)
+
+    outcomes = [bam_outcome("a", "hg38"), bam_outcome("b", "mm10")]
+    row = _row(STATUS_PASS, metric="read_length", threshold=10.0, threshold_calibrated=True)
+    p_review = _policy(
+        MINIMAL_POLICY.replace("reference_mismatch: incompatible", "reference_mismatch: review")
+    )
+    decision, findings = evaluate_group(outcomes, [row], p_review)
+    assert decision.metadata_status is CheckStatus.REVIEW
+    assert decision.overall_decision is DecisionState.REVIEW
+    assert any(
+        f.reason_code == "GROUP_DIFFERENT_REFERENCES" and f.severity.value == "warning"
+        for f in findings
+    )
+    # Default (incompatible) unchanged: hard fail.
+    decision_f, findings_f = evaluate_group(outcomes, [row], _policy())
+    assert decision_f.overall_decision is DecisionState.INCOMPATIBLE
+    assert any(
+        f.reason_code == "GROUP_DIFFERENT_REFERENCES" and f.severity.value == "incompatible"
+        for f in findings_f
+    )
