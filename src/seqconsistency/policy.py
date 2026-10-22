@@ -923,6 +923,40 @@ class TechnicalAssessment:
                 or row["status"] == STATUS_MISSING_EVIDENCE
             ):
                 self.status = _worse(self.status, CheckStatus.MISSING_EVIDENCE)
+                # The decision table must carry WHY approval was blocked, not
+                # only that it was (review round 3, point 5): emit a finding
+                # with the comparison reason, observed counts, and the minimum.
+                reason = row.get("reason_code") or "TECH_BELOW_MIN_OBSERVATIONS"
+                na, nb = row.get("observations_a"), row.get("observations_b")
+                if row["status"] == STATUS_INSUFFICIENT_OBSERVATIONS:
+                    message = (
+                        f"Metric {row.get('metric')!r} (stratum "
+                        f"{row.get('stratum')}) between "
+                        f"{row.get('dataset_a')!r} and {row.get('dataset_b')!r} "
+                        f"has only {na}/{nb} observations; the policy minimum is "
+                        f"{self._policy.min_observations}, so the distance was "
+                        "not computed."
+                    )
+                    action = (
+                        "Raise --sample-size, lower technical.min_observations, "
+                        "or pool more reads; the metric cannot be assessed "
+                        "without enough observations."
+                    )
+                else:
+                    message = (
+                        f"Comparison for metric {row.get('metric')!r} (stratum "
+                        f"{row.get('stratum')}) between "
+                        f"{row.get('dataset_a')!r} and {row.get('dataset_b')!r} "
+                        f"lacks required evidence ({reason})."
+                    )
+                    action = "Supply the missing evidence or disable its policy requirement knowingly."
+                finding(
+                    reason,
+                    message,
+                    Severity.WARNING,
+                    action,
+                    row,
+                )
             elif row["status"] == STATUS_EXCEED:
                 rule = self._resolver(row["metric"], row["stratum"])
                 action = rule.action if rule else "review"

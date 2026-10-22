@@ -214,6 +214,30 @@ def test_assessed_rows_decide_when_others_unthresholded():
     )
 
 
+def test_insufficient_observations_produce_findings_and_reason_codes():
+    # Review round 3, point 5: INSUFFICIENT_EVIDENCE decisions must explain
+    # what blocked approval — comparison reason, datasets, observed counts,
+    # and the required minimum reach the findings table and the decision row.
+    p = _policy()
+    outcomes = [_outcome("a"), _outcome("b")]
+    row = _row(
+        STATUS_INSUFFICIENT_OBSERVATIONS,
+        threshold=None,
+        reason_code="TECH_BELOW_MIN_OBSERVATIONS",
+        observations_a=1,
+        observations_b=2,
+    )
+    decision, findings = evaluate_group(outcomes, [row], p)
+    assert decision.technical_status is CheckStatus.MISSING_EVIDENCE
+    assert decision.overall_decision is DecisionState.INSUFFICIENT_EVIDENCE
+    assert "TECH_BELOW_MIN_OBSERVATIONS" in decision.reason_codes
+    tech = [f for f in findings if f.component == "technical"]
+    assert len(tech) == 1
+    msg = tech[0].message
+    assert "1/2 observations" in msg and "minimum is 10" in msg
+    assert tech[0].severity.value == "warning"
+
+
 def test_single_dataset_group_without_rows_stays_compatible():
     # One dataset means zero pairs and zero comparison rows; the no-assessed-
     # rows guard must not turn a trivially poolable group into a failure.

@@ -154,16 +154,23 @@ class StagedWriter:
         self.staged_path = final_path.with_name(f".{final_path.name}.tmp-{os.getpid()}")
         self._writer = pq.ParquetWriter(str(self.staged_path), schema, compression=COMPRESSION)
         self._rows_written = 0
+        # Buffer carried ACROSS write_rows calls: the pipeline writes per pair
+        # (and per finding), and flushing each call would create one tiny
+        # Parquet row group per call — measured 3.68 MB for 2000 single-row
+        # calls vs 3.6 KB batched. Rows flush at WRITE_BATCH_ROWS and on close.
+        self._buffer: list[dict] = []
 
     def write_rows(self, rows: Iterable[dict]) -> None:
-        batch: list[dict] = []
         for row in rows:
-            batch.append(row)
-            if len(batch) >= WRITE_BATCH_ROWS:
-                self._flush(batch)
-                batch = []
-        if batch:
-            self._flush(batch)
+            self._buffer.append(row)
+            if len(self._buffer) >= WRITE_BATCH_ROWS:
+                self._flush(self._buffer)
+                self._buffer = []
+
+    def _flush_buffer(self) -> None:
+        if self._buffer:
+            self._flush(self._buffer)
+            self._buffer = []
 
     def _flush(self, batch: list[dict]) -> None:
         arrays = []
@@ -174,6 +181,7 @@ class StagedWriter:
         self._rows_written += len(batch)
 
     def close_publish(self) -> int:
+        self._flush_buffer()
         self._writer.close()
         os.replace(self.staged_path, self.final_path)
         return self._rows_written
