@@ -1,0 +1,84 @@
+---
+title: "seqconsistency — external review round 2 fixes"
+author: "Yun Jiang"
+date: today
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    toc-expand: true
+    html-math-method: mathjax
+    grid:
+      margin-width: 400px
+include-in-header:
+  text: |
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔎</text></svg>">
+---
+
+# Objective
+
+Apply the user-confirmed disposition of external review round 2 (2026-10-21):
+six code fixes plus abort() logging plus point-2 documentation. Point 2 (Phred
+heuristic) deliberately kept unchanged — only its error message and README
+wording improved. Executed 2026-10-21/22; report:
+`20261022-092847_review2-fixes.report.qmd`.
+
+# What was done (as executed)
+
+1. **P1 — per-mate comparisons for paired BAMs.** The scan routes paired
+   records to separate R1/R2 reservoirs for `paired_short`; read-level sample
+   metrics (`read_length`, `mean_read_quality`, `gc_content`, `n_content`)
+   compare on R1/R2 strata; `mapq` stays full-scan `READS`; `insert_size`
+   stays `PAIR`; unpaired records stay pooled (reported, not compared when
+   empty); metrics/distribution rows gained per-mate strata; `sampled_count`
+   totals across strata. `mapq`/`prepare_group` plumbing added.
+2. **P1 — order-independent reference checksums.** M5 values aggregate per
+   contig across every BAM; ≥2 distinct values ⇒ one conflict finding naming
+   contigs and datasets; absent checksums keep the identity-unverified REVIEW.
+3. **P1 — approval requires an assessed threshold.** When no row was assessed
+   against a threshold, technical status is MISSING_EVIDENCE and the group
+   INSUFFICIENT_EVIDENCE, regardless of `require_thresholds`; assessed rows
+   still decide when others are unthresholded; single-dataset groups (zero
+   rows) stay COMPATIBLE.
+4. **P2 — abs(TLEN) insert eligibility.** `TLEN != 0` gate, abs value used;
+   first-in-pair/proper/primary/mapped gates unchanged; README rule updated.
+5. **P2 — streaming comparisons.** Per-pair rows stream into the comparisons
+   StagedWriter; findings stream into a findings StagedWriter with sequential
+   deterministic IDs; `TechnicalAssessment` (feed/finalize) replaces the batch
+   loop, `evaluate_group` stays a working wrapper; HTML gets bounded previews
+   (200 findings / 500 comparisons) plus true totals; metric rows stream as a
+   generator.
+6. **P2 — exact sorted-input Wasserstein.** `_Prepared` sorts each dataset
+   once; pairs use a merge-based exact W1 (no sort per pair); equivalence
+   locked against SciPy (ties included); `STATS_VERSION` bumped to
+   `sorted-merge-w1-jsd-base2-v2`.
+7. `StagedWriter.abort()` logs cleanup failures (never raises).
+8. Phred heuristic kept: error message states the exact whole-file rule and
+   resolution; README section extended. (One process miss: the fastq.py
+   message edit was initially left unstaged — caught by `git status` before
+   the docs commit and landed as `f9ae9ee`.)
+9. Example fix: `make_examples.py` BAMs now carry both mates; example 04
+   returned from a fixture-induced INSUFFICIENT_EVIDENCE to REVIEW.
+
+# Files touched
+
+`src/seqconsistency/{models,bam,comparison,statistics,policy,pipeline,metrics,parquet_io,html_report,fastq}.py`,
+`tests/{test_policy,test_bam,test_comparison,test_statistics,test_e2e}.py`,
+`examples/make_examples.py`, `README.md`,
+`benchmarks/results-2026-10-21.{json,md}` (re-measured),
+`docs/plans/**`, `docs/misc/**`.
+
+# Verification (results)
+
+1. New regression test per fix from the reviewer's reproductions: mate swap
+   (EXCEED 30.0 both strata, REVIEW), M5 orders abc/bac/cab, empty-threshold
+   policy (INSUFFICIENT_EVIDENCE), RF-oriented pairs (100/100 observed),
+   30-dataset streaming run (5,220 rows complete, bounded HTML preview),
+   SciPy equivalence + zero-argsort, example outcomes.
+2. Full suite including the two slow memory tests: 181 passed; mypy strict and
+   ruff clean.
+3. Benchmark re-measured on an idle machine (idle-gated; started at load1
+   3.04/load5 5.85): pair scaling −65/−44/−41/−32% at 5/10/20/40 datasets;
+   BAM 64.1k rec/s (+4.6%); FASTQ within noise; peak RSS flat (959.7 MiB) at
+   4× reads; worker-4 CLI 3.02 s.
+4. All eight examples at documented decisions after the fixture fix.

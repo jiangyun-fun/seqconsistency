@@ -1,0 +1,814 @@
+---
+title: "seqconsistency — external review round 2 fixes report"
+author: "Yun Jiang"
+date: today
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    toc-expand: true
+    html-math-method: mathjax
+    grid:
+      margin-width: 400px
+include-in-header:
+  text: |
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔎</text></svg>">
+---
+
+<!-- Plan: docs/plans/20261021-174833_review2-fixes.plan.qmd -->
+
+## feature
+
+### Per-mate comparisons for paired BAM datasets
+
+```
+level: high
+```
+
+#### reason
+
+The reviewer's reproduction was reproduced first (mate-swapped qualities compared as identical, COMPATIBLE), and a new end-to-end regression test now asserts the opposite outcome: EXCEED 30.0 Phred on both R1 and R2, overall REVIEW.
+
+#### description
+
+```
+type: [text]
+```
+
+1. `paired_short` BAMs previously pooled both mates into one `READS` stratum, so anti-correlated mate shifts (A: R1 Q10/R2 Q40; B: swapped) cancelled to zero distance on every metric.
+2. The scan now routes paired records to separate R1/R2 reservoirs (first/second-in-pair flags); `read_length`, `mean_read_quality`, `gc_content`, `n_content` compare on R1/R2 strata, mirroring PE FASTQ (spec §6.2).
+3. `mapq` stays on pooled `READS` (full-scan, mate-independent); `insert_size` stays `PAIR`; unpaired records inside a paired BAM stay in the pooled sample, reported but not compared when empty.
+4. `sampled_count` totals records sampled across read strata; metrics and distribution tables gained per-mate rows.
+
+#### before
+
+A pooled distribution declared mate-swapped datasets technically identical and approved pooling.
+
+#### after
+
+Mate-specific shifts surface per stratum; the regression test proves the decision flips to REVIEW.
+
+#### evidence
+
+```
+level: high
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+`tests/test_e2e.py::test_bam_mate_swapped_qualities_detected_per_mate`; `tests/test_bam.py::test_paired_bam_samples_mates_separately`; reproduction script output (exit 0, `mean_read_quality READS 0.0 PASS`, COMPATIBLE) from the disposition turn.
+
+:::
+
+## fix
+
+### Reference checksum conflicts are order-independent
+
+```
+level: high
+```
+
+#### reason
+
+A parametrized test covers three manifest orders (abc/bac/cab) of the reviewer's scenario (BAM 1 without M5, BAMs 2 and 3 conflicting); all three now yield `BAM_REFERENCE_CHECKSUM_CONFLICT` and metadata FAIL.
+
+#### description
+
+```
+type: [text]
+```
+
+1. M5 values were compared only against the first BAM, so a conflict between later BAMs was hidden whenever the first carried no checksum.
+2. The engine now aggregates every available M5 per contig across the whole group before comparing; two or more distinct values produce one conflict finding naming the contigs and the datasets carrying each value.
+3. Absent checksums keep the `BAM_REFERENCE_IDENTITY_UNVERIFIED` review and are never reported as conflicts.
+
+#### before
+
+Reordering the manifest changed the decision from REVIEW to INCOMPATIBLE for identical inputs.
+
+#### after
+
+The decision is independent of manifest order.
+
+#### evidence
+
+```
+level: high
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+`tests/test_policy.py::test_bam_checksum_conflict_found_regardless_of_order`, `test_bam_missing_md5_is_review_not_conflict`.
+
+:::
+
+### Technical approval requires an assessed threshold
+
+```
+level: high
+```
+
+#### reason
+
+The reviewer's reproduction (empty thresholds, `require_thresholds: false`, length W1 96, GC JSD 1.0, COMPATIBLE) was reproduced verbatim before the fix; the rewritten tests now assert MISSING_EVIDENCE and INSUFFICIENT_EVIDENCE.
+
+#### description
+
+```
+type: [text]
+```
+
+1. Spec §7 is unconditional: "If no threshold is configured or calibrated, report the metric but do not use it to automatically approve pooling."
+2. When no comparison row in a group was assessed against a threshold, technical status becomes `MISSING_EVIDENCE` and the group `INSUFFICIENT_EVIDENCE` — with or without `require_thresholds`.
+3. Mixed policies keep the natural semantics: assessed rows decide; unthresholded metrics stay informational. Single-dataset groups (zero pairs, zero rows) stay COMPATIBLE.
+
+#### before
+
+An empty policy approved pooling regardless of measured distances.
+
+#### after
+
+`require_thresholds: false` is explicitly a reporting mode, never an approval mode.
+
+#### evidence
+
+```
+level: high
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+`tests/test_policy.py::test_no_thresholds_cannot_approve_even_when_not_required`, `test_assessed_rows_decide_when_others_unthresholded`, `test_single_dataset_group_without_rows_stays_compatible`, `test_not_assessed_rows_block_nothing` (rewritten).
+
+:::
+
+### Insert-size eligibility takes abs(TLEN)
+
+```
+level: medium
+```
+
+#### reason
+
+A new test with 100 RF-oriented proper pairs (first segment rightmost, TLEN −300) yields 100 observations of 100 pairs; previously the same shape produced zero observations (reproduced).
+
+#### description
+
+```
+type: [text]
+```
+
+1. The SAM spec defines TLEN as negative on the rightmost segment; the old `TLEN > 0` gate silently dropped every such proper pair and biased the distribution.
+2. The gate is now `TLEN != 0` with `abs(TLEN)` used; the first-in-pair/proper/primary/mapped gates and the one-observation-per-pair rule are unchanged; the README states the rule.
+
+#### before
+
+RF-oriented proper pairs contributed zero insert observations (reproduced: 50 pairs, 0 sampled), biasing the distribution and understating evidence.
+
+#### after
+
+Every proper pair contributes exactly one observation via abs(TLEN); TLEN == 0 (unknown) stays excluded.
+
+#### evidence
+
+```
+level: high
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+`tests/test_bam.py::test_insert_size_includes_pairs_with_read1_rightmost`.
+
+:::
+
+### Streaming comparisons and bounded HTML retention
+
+```
+level: high
+```
+
+#### reason
+
+A 30-dataset regression run (435 pairs, 5,220 comparison rows) writes the complete Parquet table with sequential unique finding IDs while the HTML preview shows 500 rows of 5,220; memory now scales with output batches.
+
+#### description
+
+```
+type: [text]
+```
+
+1. Group rows accumulated in a list, all groups' rows were retained for `--report-out`, and findings accumulated across groups — memory scaled with pair counts.
+2. Each pair's rows now stream into the comparisons StagedWriter and each finding into a findings StagedWriter with sequential deterministic IDs; metric rows feed `write_table` as a generator.
+3. `TechnicalAssessment` (policy) replaces the batch loop: `feed` assesses one pair's rows, `finalize` applies the group-level guards; `evaluate_group` remains a working wrapper for tests.
+4. The HTML report receives bounded previews (findings ≤ 200, comparisons ≤ 500 — its display limits) plus true totals.
+
+#### before
+
+Memory grew with pair counts: whole-group row lists, all-groups HTML retention, and a full findings list before one bulk write.
+
+#### after
+
+Memory scales with output batches: per-pair streaming into staged writers, incremental assessment, bounded HTML previews.
+
+#### evidence
+
+```
+level: high
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+`tests/test_e2e.py::test_large_group_streams_comparisons_and_report`; measured pair-scaling drop in the observation below.
+
+:::
+
+### Exact sorted-input Wasserstein
+
+```
+level: medium
+```
+
+#### reason
+
+An equivalence test against SciPy (30 random trials incl. heavy ties and identical arrays, rtol 1e-12) and an argsort-count regression (zero `np.argsort` calls for a 3-dataset group) lock the replacement.
+
+#### description
+
+```
+type: [text]
+```
+
+1. SciPy re-sorted both inputs on every call (2 argsorts per call, measured); each dataset now sorts once and pairs use an exact merge-based W1 on presorted arrays (binary-search merge positions, CDFs via `searchsorted`).
+2. The replacement is documented (docstring + README) and `STATS_VERSION` bumped to `sorted-merge-w1-jsd-base2-v2` so `method_version` in outputs stays honest — per the spec's "not silently" principle.
+
+#### before
+
+SciPy re-sorted both inputs on every comparison — 2 argsorts per call, O(pairs × k log k) for a group.
+
+#### after
+
+One sort per dataset; pairs merge presorted arrays in O((n+m)·log) with no sort; identical values locked by test.
+
+#### evidence
+
+```
+level: high
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+`tests/test_statistics.py::test_wasserstein_sorted_matches_scipy_exactly`, `test_comparisons_never_argsort_per_pair`.
+
+:::
+
+### Example BAMs carry both mates; abort() logs cleanup failures
+
+```
+level: medium
+```
+
+#### reason
+
+Example 04 flipped to INSUFFICIENT_EVIDENCE under the new per-mate check — correctly, because its fixtures contained only first-in-pair records; `caplog`-free logging review confirms abort() still never raises.
+
+#### description
+
+```
+type: [text]
+```
+
+1. `examples/make_examples.py::make_bam` now writes both mates of every fragment (R1 flag 99 leftmost, R2 flag 147 rightmost), globally coordinate-sorted; example 04 returned to REVIEW and all eight documented outcomes hold.
+2. `StagedWriter.abort()` logs close/unlink failures with `exc_info` instead of bare `pass`; it still never raises, so the original error stays visible.
+
+#### before
+
+Example 04 fixtures contained only first-in-pair records (flag 99), leaving R2 empty under per-mate comparisons; abort() swallowed cleanup errors with pass.
+
+#### after
+
+Both mates per fragment, coordinate-sorted; example 04 back to REVIEW; abort() logs failures with exc_info and still never raises.
+
+#### evidence
+
+```
+level: high
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+`examples/run_examples.sh` output (all eight scenarios at documented decisions); `src/seqconsistency/parquet_io.py` abort docstring; full suite green.
+
+:::
+
+## limitation
+
+### `require_thresholds: false` is report-only, never approval
+
+```
+level: medium
+```
+
+#### reason
+
+Enforced by tests, so the boundary is certain; listed because operators must know the opt-out no longer yields COMPATIBLE under any data.
+
+#### description
+
+```
+type: [text]
+```
+
+1. With the approval guard, `require_thresholds: false` plus zero thresholds always ends in INSUFFICIENT_EVIDENCE; the mode exists to produce distance reports without calibrated thresholds.
+2. The only path to COMPATIBLE remains calibrated thresholds that pass.
+
+#### evidence
+
+```
+level: high
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+README "Policy" section bullet 1 (updated); `tests/test_policy.py::test_no_thresholds_cannot_approve_even_when_not_required`.
+
+:::
+
+## caveat
+
+### Phred+64 heuristic kept; the reviewer's removal was rejected
+
+```
+level: medium
+```
+
+#### reason
+
+The user confirmed the disposition to keep the heuristic; the disagreement rests on the spec's own fail-fast class ("unsupported quality encoding") and on measured platform bounds, both in the record.
+
+#### description
+
+```
+type: [text]
+```
+
+1. Removing the heuristic would accept genuine Phred+64 files with every quality silently shifted +31; the rejection window (every byte ≥ 64 and some ≥ 90 across the whole file) is effectively empty for real platforms — Illumina caps near byte 74, and real HiFi files contain sub-Q31 bases.
+2. Concessions applied: the error message and README now state the exact whole-file rule, that mixed files with Q60 records are accepted, and the resolution path for genuinely uniform-high files.
+3. Verified this round: a mixed file (one low-quality record + 49 all-Q60 records) is accepted; only whole-file uniform-high files reject.
+
+#### evidence
+
+```
+level: high
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+Reproduction outputs from the disposition turn; `src/seqconsistency/fastq.py` rejection message; README "Quality encoding" section.
+
+:::
+
+## assumption
+
+### Single-dataset groups remain COMPATIBLE without comparison rows
+
+```
+level: low
+```
+
+#### reason
+
+The no-assessed-rows guard deliberately skips empty row sets, so a trivially poolable single dataset is not turned into a failure; a test locks the behavior.
+
+#### description
+
+```
+type: [text]
+```
+
+1. One dataset yields zero pairs and zero rows; approval semantics for such groups rest on metadata and identity alone, as before.
+
+#### evidence
+
+```
+level: high
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+`tests/test_policy.py::test_single_dataset_group_without_rows_stays_compatible`.
+
+:::
+
+## conclusion
+
+### All six confirmed fixes are implemented, tested, and measured
+
+```
+level: high
+```
+
+#### reason
+
+The full suite (including the two slow memory tests) passes at 181 tests, mypy and ruff are clean, and the re-measured benchmark quantifies the comparison-stage improvement on identical workloads.
+
+#### description
+
+```
+type: [text]
+```
+
+1. The four P1 holes (mate masking, order-dependent checksums, threshold-free approval, TLEN orientation) are closed with regression tests built from the reviewer's own reproductions.
+2. The two P2 items (unbounded retention, per-pair re-sorting) are closed with streaming writers and an exact sorted-input distance; pair-scaling wall time dropped 32–65%.
+3. Point 2 (Phred) stayed by agreed disposition with sharpened documentation; the abort() logging preference was applied.
+
+#### evidence
+
+```
+level: high
+type: [statistic]
+```
+
+::: {.callout-note collapse="true"}
+
+`/tmp/final_suite_r2.log`: 181 passed in 235.93 s; `pixi run mypy src` clean; `pixi run ruff check src tests` clean; `benchmarks/results-2026-10-21.json` re-measured 2026-10-21T18:52+0800.
+
+:::
+
+## recommendation
+
+### M: treat COMPATIBLE results as technical assessments only
+
+```
+level: medium
+```
+
+#### reason
+
+Genotype-based identity verification (Phase 3) remains necessary for biological claims.
+
+#### description
+
+```
+type: [text]
+```
+
+1. Pooling decisions rest on technical/metadata/declared-identity components, not verified sample identity.
+
+#### evidence
+
+```
+level: high
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+README "Decision engine"; decisions table `identity_evidence_level` column.
+
+:::
+
+### L: record calibration provenance next to the policy
+
+```
+level: low
+```
+
+#### reason
+
+`calibrated: true` claims must stay auditable.
+
+#### description
+
+```
+type: [text]
+```
+
+1. When calibrating, record the calibration dataset provenance beside the policy file.
+
+#### evidence
+
+```
+level: unknown
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+None
+
+:::
+
+## next
+
+### M: verify `reference_mismatch: review` behavior
+
+```
+level: medium
+```
+
+#### reason
+
+A parallel-session audit found policy.py emits no finding for differing `reference_id` under `review` — only the `incompatible` branch exists.
+
+#### description
+
+```
+type: [text]
+```
+
+1. Add the review finding or a test fixing the semantics.
+
+#### evidence
+
+```
+level: unknown
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+None
+
+:::
+
+### M: decide `same_sample_id_required`/`same_assay_required`
+
+```
+level: medium
+```
+
+#### reason
+
+The keys are parsed but have no behavioral consumer.
+
+#### description
+
+```
+type: [text]
+```
+
+1. Honor them or reject non-default values.
+
+#### evidence
+
+```
+level: unknown
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+None
+
+:::
+
+### M: Phase 2 candidates
+
+```
+level: medium
+```
+
+#### reason
+
+Chosen and specified in the task specification; blocked only by Phase-2 sequencing.
+
+#### description
+
+```
+type: [text]
+```
+
+1. Sourmash sequence-content comparison, reference-aware coverage comparison, processing-aware merged-read checks, in that order.
+
+#### evidence
+
+```
+level: unknown
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+None
+
+:::
+
+### M: recalibrate example thresholds with genuine between-run data
+
+```
+level: medium
+```
+
+#### reason
+
+Uncalibrated thresholds withhold approval by design; COMPATIBLE requires calibration.
+
+#### description
+
+```
+type: [text]
+```
+
+1. Follow the README calibration workflow, then set `calibrated: true`.
+
+#### evidence
+
+```
+level: unknown
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+None
+
+:::
+
+### L: remove the stray `utput-format=concise` file in the repo root
+
+```
+level: low
+```
+
+#### reason
+
+Malformed CLI flag artifact (19 kB, untracked).
+
+#### description
+
+```
+type: [text]
+```
+
+1. Delete the file.
+
+#### evidence
+
+```
+level: unknown
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+None
+
+:::
+
+## observation
+
+### Re-measured benchmark after round 2 (same host, same workloads)
+
+```
+level: high
+```
+
+#### reason
+
+Clean run on an idle machine: the harness waited out external load and started at load1 3.04 / load5 5.85.
+
+#### description
+
+```
+type: [table]
+```
+
+| Workload | Previous | This round | Change |
+|---|---:|---:|---:|
+| Pair scaling 5 datasets | 1.774 s | 0.627 s | −65% |
+| Pair scaling 10 datasets | 6.888 s | 3.829 s | −44% |
+| Pair scaling 20 datasets | 24.693 s | 14.616 s | −41% |
+| Pair scaling 40 datasets | 91.423 s | 61.974 s | −32% |
+| BAM 500k records | 61,246 rec/s | 64,058 rec/s | +4.6% |
+| SE FASTQ 2M reads | 124,660 reads/s | 127,745 reads/s | +2.5% |
+| PE FASTQ 2M pairs | 56,606 pairs/s | 57,415 pairs/s | +1.4% |
+| Long reads 400k | 23.08 M bases/s | 23.25 M bases/s | +0.7% |
+| Workers 1→4 (CLI) | 5.61→4.01 s | 5.23→3.02 s | −25% at 4 |
+| Peak RSS 150k→600k reads | flat | flat (959.7 MiB) | bounded |
+
+FASTQ paths moved within run-to-run noise, as expected — the round touched BAM sampling and the comparison stage. The per-mate reservoirs cost nothing measurable; the sorted-input Wasserstein and streaming comparison stage carry the pair-scaling drop.
+
+#### evidence
+
+```
+level: high
+type: [table]
+```
+
+::: {.callout-note collapse="true"}
+
+`benchmarks/results-2026-10-21.json` (recorded 2026-10-21T18:52:50+0800) against the prior committed entry (17:02); `/tmp/bench-r2.log` idle-gate line.
+
+:::
+
+## process
+
+### idle-gated the benchmark after a contended machine
+
+```
+status: right
+```
+
+#### description
+
+```
+type: [text]
+```
+
+1. External load stood at 19–26 on 12 cores when the suite finished; a background gate waited until load1 < 4 and load5 < 6 (9 minutes), then ran the benchmark.
+2. The committed numbers therefore come from a quiet machine, avoiding the contaminated-run discard of the previous round.
+
+#### evidence
+
+```
+level: high
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+`/tmp/bench-r2.log`: `STARTING_BENCH load1=3.04 load5=5.85 after 540s`.
+
+:::
+
+### missed staging fastq.py, caught by git status before the docs commit
+
+```
+status: wrong
+```
+
+#### description
+
+```
+type: [text]
+```
+
+1. The point-2 message change sat uncommitted through six commits because the earlier batch staged by filename and fastq.py was forgotten.
+2. `git status` before the docs commit surfaced it; it landed as its own `docs:` commit. The better action, now applied: always diff `git status --short` against the intended file list at each commit.
+
+#### evidence
+
+```
+level: high
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+Commit `f9ae9ee` (fastq.py alone); session log.
+
+:::
+
+## change
+
+### Review round 2 mutations
+
+```
+level: high
+```
+
+#### reason
+
+Recorded facts from git at commit time.
+
+#### description
+
+```
+type: [table, text]
+```
+
+| Verb | Paths |
+|---|---|
+| Updated | `src/seqconsistency/{parquet_io,policy,bam,models,comparison,metrics,statistics,pipeline,html_report,fastq}.py`, `tests/{test_policy,test_bam,test_comparison,test_statistics,test_e2e}.py`, `examples/make_examples.py`, `README.md`, `benchmarks/results-2026-10-21.{json,md}` |
+| Created | `docs/plans/20261021-174833_review2-fixes.plan.qmd`, this report |
+
+1. Git: `main`, commits `4141a0a`, `d14c952`, `6853486`, `d4bb895`, `5d87c72`, `5763a55`, `7bebc8a`, `f9ae9ee` plus this docs commit.
+2. The docs commit also carries a parallel session's uncommitted `docs/misc` entries (same files, union semantics).
+
+#### evidence
+
+```
+level: high
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+`git log --oneline`; `git status` clean at commit time except parallel-session `docs/misc` entries included here.
+
+:::
+
+## other
+
+None
+

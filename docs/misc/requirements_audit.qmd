@@ -72,3 +72,86 @@ Files: updated 10 src modules, `policies/example-illustrative.yaml`, 7 test file
 `benchmarks/render_results.py`; created `docs/plans/20261021-165647_review-fixes.plan.qmd`
 and `...20261021-170329_review-fixes.report.qmd` (html render untracked).
 Packages: duckdb -> pyproject dev extra. Git: `fix:` and docs commits on `main`.
+
+## Introduce how to use seqconsistency
+
+```
+level: low
+date: 2026-10-21
+```
+
+### description
+
+Explain in chat how to use the seqconsistency tool: what it assesses, installation,
+the manifest and policy inputs, the `check` command and its flags, outputs and exit
+codes, and the runnable synthetic examples. No code change was requested.
+
+### result
+
+1. Answered with a four-step usage guide (install, manifest, policy, run) grounded in `README.md` and `pyproject.toml` as read this turn; no code changed.
+
+### change
+
+Files: appended this audit entry; synced `docs/misc/next_and_recommendation.qmd`
+(rolling state). Packages: none. Environments: none. Git: not committed — this
+session had no shell tool available.
+
+## Explain manifest column usage
+
+```
+level: low
+date: 2026-10-21
+```
+
+### description
+
+Explain in chat what the tool does with each of the 13 manifest columns: load-time
+validation, group formation, engine selection, metadata comparison, and downstream
+consumption in outputs.
+
+### result
+
+1. Answered per-column usage traced through `manifest.py`, `policy.py`, and `pipeline.py` (all read this turn), with a metadata-comparison table of reason codes and outcomes.
+2. Answered with two verified observations: `reference_mismatch: review` emits no finding for differing `reference_id` (only the `incompatible` branch exists), and `same_sample_id_required`/`same_assay_required` are parsed but not consulted on the decision path.
+
+### change
+
+Files: appended this audit entry; synced `docs/misc/next_and_recommendation.qmd`
+(two new verification items). Packages: none. Environments: none. Git: not
+committed — no shell tool this session.
+
+## Apply external review round 2 fixes
+
+```
+level: high
+date: 2026-10-22
+cross-repo: seqconsistency
+```
+
+### description
+
+Implement the user-confirmed disposition of a second external review: four P1
+correctness holes (pooled mate comparisons hiding swaps, order-dependent
+reference checksums, approval without any assessed threshold, TLEN orientation
+bias in insert sampling), two P2 engineering items (unbounded comparison
+retention, per-pair input re-sorting in Wasserstein), abort() logging, and
+documentation for the one rejected point (keep the Phred+64 heuristic).
+
+### result
+
+1. Implemented all six fixes with regression tests built from the reviewer's own reproductions (each was independently reproduced before fixing).
+2. Fixed the example fixtures the new per-mate check exposed (first-in-pair-only BAMs) and restored all eight documented example outcomes.
+3. Verified the full suite (181 passed incl. slow memory tests), mypy strict and ruff clean.
+4. Re-measured benchmarks on an idle machine: pair scaling −32–65%, BAM +4.6%, FASTQ within noise, peak RSS flat at 4× reads.
+5. Rejected point 2 with evidence: removal would silently misread genuine Phred+64 files; documented the exact rejection window and resolution instead.
+
+### change
+
+Files: updated 10 src modules, 5 test files, `examples/make_examples.py`,
+`README.md`, `benchmarks/results-2026-10-21.{json,md}`; created
+`docs/plans/20261021-174833_review2-fixes.plan.qmd` and
+`docs/plans/20261022-092847_review2-fixes.report.qmd`; appended this entry and
+synced the rolling file (this commit also carries a parallel session's
+uncommitted docs/misc entries). Packages: none. Environments: none. Git: main,
+commits 4141a0a, d14c952, 6853486, d4bb895, 5d87c72, 5763a55, 7bebc8a, f9ae9ee
+plus this docs commit.
