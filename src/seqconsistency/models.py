@@ -249,6 +249,10 @@ class FastqFileStats:
     n_hist: Histogram | None = None
     length_hist: Histogram | None = None
     positional: PositionalProfile | None = None
+    #: Whole-file classic Phred+64 signature (every byte >= 64, some >= 90):
+    #: valid under both encodings; metrics are computed under Phred+33 and the
+    #: decision engine withholds automatic approval instead of guessing.
+    encoding_ambiguous: bool = False
 
 
 @dataclass

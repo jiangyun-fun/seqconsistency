@@ -1,0 +1,58 @@
+---
+title: "seqconsistency — review round 4: encoding ambiguity warns instead of rejecting"
+author: "Yun Jiang"
+date: today
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    toc-expand: true
+    html-math-method: mathjax
+    grid:
+      margin-width: 400px
+include-in-header:
+  text: |
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔎</text></svg>">
+---
+
+# Objective
+
+Apply the user-confirmed round-4 disposition (2026-10-22): the ambiguous
+Phred+64 signature window (whole-file every byte >= 64 and some >= 90) stops
+being a hard error and becomes a per-dataset `QUALITY_ENCODING_AMBIGUOUS`
+WARNING finding that forces the group to REVIEW. Bytes outside ASCII [33, 126]
+still abort (provable violation). No encoding-declaration machinery, no data
+modification advice, no Phred+64 support (v1 is Phred+33 only).
+
+# Rationale (confirmed)
+
+The signature is valid under BOTH encodings (Cock et al. 2010: Sanger FASTQ
+encodes Q0-93 as ASCII 33-126), so a hard rejection asserts a guess — the same
+pretense the spec forbids ("do not pretend ASCII ranges can distinguish").
+Ambiguity withholds automatic approval (REVIEW) but never blocks the report,
+mirroring the uncalibrated-threshold philosophy.
+
+# Scope
+
+1. `models.FastqFileStats.encoding_ambiguous: bool = False` (per strand;
+   dataset-level ambiguity = any strand flagged).
+2. `fastq.StrandStats.finalize()` sets the flag instead of raising; module
+   docstring and constant comments updated; the hard [33, 126] byte check is
+   untouched.
+3. `policy._metadata_findings` emits one WARNING finding per affected dataset
+   (both readings named; metrics computed under Phred+33; resolution is
+   verifying the source encoding — never modifying data) and sets metadata
+   REVIEW, so `QUALITY_ENCODING_AMBIGUOUS` reaches the decision reason codes.
+4. README encoding section rewritten: abort range, ambiguous-warns semantics,
+   Cock et al. citation, no override flag.
+5. Tests: `test_likely_phred64_rejected` becomes an ambiguity-flag test;
+   scan-level flag tests; e2e test asserting REVIEW + reason code + finding.
+
+# Verification
+
+1. Unit: uniform-`]` file scans with `encoding_ambiguous=True`; mixed and
+   uniform-`K` files stay `False`; byte-out-of-range still aborts.
+2. e2e: group containing one ambiguous dataset → metadata REVIEW, decision
+   REVIEW (exit 1), finding and reason code present.
+3. Full suite green; mypy and ruff clean. Examples unchanged (none use the
+   ambiguous window). No benchmark impact (no hot-path change).

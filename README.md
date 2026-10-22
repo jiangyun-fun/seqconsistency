@@ -194,27 +194,27 @@ biological validation from synthetic software tests.
   nonempty file, gzip integrity (corrupt gzip aborts), supported alphabet
   (`A/C/G/T/N`, upper or lower case; other IUPAC codes are unsupported in v1 and
   abort), quality bytes within ASCII `[33, 126]`.
-- **Quality encoding: Phred+33 only.** ASCII quality ranges alone cannot always
-  unambiguously distinguish Phred+33 from Phred+64. Bytes outside `[33, 126]` abort
-  (provably not Phred+33). A file is additionally rejected as carrying the classic
-  Phred+64 signature when its full-file minimum quality byte is ≥ 64 (`@`) **and**
-  maximum ≥ 90 (`Z`): under Phred+33 that means every base ≥ Q31 with some > Q57,
-  which no platform emits, while under Phred+64 it means Q26, which is routine.
-  Uniform high-quality Phred+33 files (for example every byte `K`, uniform Q42)
-  are accepted. Files with any low-quality base (byte < 64) are unambiguous
-  Phred+33 and accepted. The exact decision rule: a file is rejected only when
-  **every** quality byte in the whole file is ≥ 64 **and** at least one is ≥ 90 —
-  the rejection window is *entirely* uniform-high files (every base ≥ Q31, some
-  ≥ Q58), which no standard platform or common simulator emits; a mixed file
-  containing Q60 records alongside ordinary ones is accepted. A rejected file
-  must be resolved by **verifying its true encoding**, never by modifying the
-  data under assessment: a genuinely Phred+64 file must be re-exported as
-  Phred+33 from its source pipeline (the tool would otherwise read every
-  quality silently shifted by +31), and a genuinely uniform-high Phred+33 file
-  is a case to report upstream. This tool never alters or advises altering
-  input data. v1 has no encoding override flag by design, because the same
-  signature is produced by both encodings and a flag would only move the guess
-  from the tool to the operator.
+- **Quality encoding: Phred+33 only.** Sanger FASTQ encodes Phred 0–93 as
+  ASCII 33–126 ([Cock et al., 2010](https://academic.oup.com/nar/article/38/6/1767/3112533));
+  bytes outside `[33, 126]` abort the run (provably not Phred+33). A file whose
+  **every** quality byte is ≥ 64 (`@`) with at least one ≥ 90 (`Z`) carries the
+  classic Phred+64 signature — but that signature is **valid under both
+  encodings** (every base ≥ Q31 with some ≥ Q58 under Phred+33; routine Q26+
+  under Phred+64), and ASCII ranges cannot distinguish them. So the tool does
+  not guess in either direction: the scan completes under the declared
+  Phred+33 reading, the dataset is flagged, and the group receives a
+  `QUALITY_ENCODING_AMBIGUOUS` **warning** that sets the decision to `REVIEW` —
+  ambiguity withholds automatic approval but never blocks the report (the same
+  philosophy as uncalibrated thresholds). The recommended action is to verify
+  the file's true encoding at its source: a genuinely Phred+64 file must be
+  re-exported as Phred+33 (it would otherwise be read with every quality
+  shifted by +31); a genuinely uniform-high Phred+33 file is processed as-is
+  under the warning. The tool never alters and never advises altering input
+  data. Files with any low-quality base (byte < 64) are unambiguous Phred+33
+  and accepted silently; uniform files below the signature (for example every
+  byte `K`, uniform Q42) are accepted silently. There is no encoding override
+  flag: the warning path already lets the operator decide with the full report
+  in hand.
 - **Paired-end synchronization** compares corresponding records — not just counts.
   Read names are normalized by taking the first whitespace-delimited token and
   removing a trailing `/1` or `/2` (covering legacy suffixes and Illumina/CASAVA

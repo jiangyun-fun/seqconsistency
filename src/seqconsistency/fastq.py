@@ -10,12 +10,14 @@ Design (README § FASTQ processing):
   no per-base Python loops. Memory is bounded by the batch byte budget, never by the
   file size or read count.
 - Quality encoding: Phred+33 only. Bytes outside ASCII [33, 126] abort the run
-  (provably not Phred+33). ASCII ranges alone cannot always distinguish encodings;
-  the documented heuristic rejects a file only when it carries the classic Phred+64
-  signature: full-file minimum quality byte >= 64 ('@') AND maximum >= 90 ('Z').
-  Under Phred+33 a maximum >= 90 means some base above Q57, which no platform emits;
-  under Phred+64 it means Q26, which is routine. Uniform high-quality Phred+33 files
-  (e.g. every byte 'K', Q42) are accepted.
+  (provably not Phred+33). A file whose EVERY quality byte is >= 64 ('@') with
+  maximum >= 90 ('Z') carries the classic Phred+64 signature, but the signature
+  is valid under BOTH encodings (Sanger FASTQ spans Q0-93, ASCII 33-126; Cock
+  et al. 2010) — ASCII ranges cannot distinguish them, so the scan does not
+  guess: the strand is flagged ``encoding_ambiguous`` and the decision engine
+  emits a QUALITY_ENCODING_AMBIGUOUS warning that withholds automatic approval
+  (group REVIEW) instead of rejecting valid input. Uniform high-quality
+  Phred+33 files below the signature (e.g. every byte 'K', Q42) pass silently.
 - Alphabet: A/C/G/T/N upper or lower case. Other IUPAC codes abort the run in v1.
 """
 
@@ -71,9 +73,9 @@ for _q in range(33, 127):
 
 MIN_QUAL_BYTE = 33
 MAX_QUAL_BYTE = 126
-#: Heuristic Phred+64 rejection thresholds (see module docstring): classic Phred+64
-#: output has no byte below '@' (64) and routinely reaches 'Z' (90) or above;
-#: Phred+33 never exceeds Q45 in practice, so a max byte >= 90 cannot be Phred+33.
+#: Ambiguous-encoding signature thresholds (see module docstring): classic Phred+64
+#: output has no byte below '@' (64) and routinely reaches 'Z' (90) or above. The
+#: signature is valid under both encodings, so it flags — never rejects — the strand.
 LIKELY_P64_MIN_BYTE = 64
 LIKELY_P64_MAX_BYTE = 90
 
@@ -419,17 +421,13 @@ class StrandStats:
                 source=self.source,
             )
         if st.min_qual_byte >= LIKELY_P64_MIN_BYTE and st.max_qual_byte >= LIKELY_P64_MAX_BYTE:
-            raise InputDataError(
-                "quality encoding rejected: EVERY quality byte in this file is "
-                f">= ASCII 64 and the maximum is {st.max_qual_byte} — the classic "
-                "Phred+64 signature (under Phred+33 this means every base >= Q31 "
-                "with some >= Q58, which no standard platform emits; a mixed file "
-                "with any lower-quality base is accepted as Phred+33). v1 supports "
-                "Phred+33 only, and ASCII ranges alone cannot always distinguish "
-                "encodings; the exact rule and the resolution for genuinely "
-                "uniform-high Phred+33 files are documented in the README",
-                source=self.source,
-            )
+            # Ambiguous encoding, not a violation: every byte >= 64 with some
+            # >= 90 is valid under BOTH Phred+33 (every base >= Q31, some >=
+            # Q58) and Phred+64 (routine Q26+). ASCII ranges cannot distinguish
+            # the two, and the spec forbids pretending they can — so the scan
+            # completes under the declared Phred+33 reading and the decision
+            # engine withholds automatic approval (QUALITY_ENCODING_AMBIGUOUS).
+            st.encoding_ambiguous = True
         arr, ov, un, n = self._gc
         st.gc_hist = dist.Histogram("per_read_gc", dist.GC_EDGES, arr.tolist(), ov, un, n)
         arr, ov, un, n = self._nfr

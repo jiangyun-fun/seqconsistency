@@ -103,13 +103,23 @@ def test_quality_outside_ascii33_126_rejected(tmp_path: Path):
         scan_fastq_single("ds", p, ReadType.ONT, SAMPLING, 10)
 
 
-def test_likely_phred64_rejected(tmp_path: Path):
-    # Every quality byte >= 64, max >= 75: consistent with Phred+64, rejected.
+def test_ambiguous_signature_flags_not_rejects(tmp_path: Path):
+    # Review round 4: every byte >= 64 with max >= 90 is valid under BOTH
+    # encodings, so the scan completes under the declared Phred+33 reading and
+    # flags the strand; the decision engine turns the flag into a WARNING that
+    # withholds approval (never a hard error, never silent).
     p = tmp_path / "p64.fastq"
     qual = bytes([64, 70, 80, 104])
     p.write_bytes(b"@r1\nACGT\n+\n" + qual + b"\n" + b"@r2\nACGT\n+\n" + qual + b"\n")
-    with pytest.raises(InputDataError, match="Phred\\+64"):
-        scan_fastq_single("ds", p, ReadType.ONT, SAMPLING, 10)
+    stats, sample, n, _ = scan_fastq_single("ds", p, ReadType.ONT, SAMPLING, 10)
+    assert n == 2
+    assert stats.encoding_ambiguous is True
+    assert stats.min_qual_byte == 64 and stats.max_qual_byte == 104
+    # Uniform Q42 ('K': min 75 >= 64 but max 75 < 90) stays silent.
+    p2 = tmp_path / "k.fastq"
+    p2.write_bytes(b"@r1\nACGT\n+\n" + b"K" * 4 + b"\n")
+    stats2, *_ = scan_fastq_single("ds2", p2, ReadType.ONT, SAMPLING, 10)
+    assert stats2.encoding_ambiguous is False
 
 
 def test_valid_phred33_high_quality_accepted(tmp_path: Path):

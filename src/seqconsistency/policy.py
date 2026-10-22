@@ -442,6 +442,56 @@ def _metadata_findings(
     def distinct(values: Iterable[str]) -> list[str]:
         return sorted(set(values))
 
+    def single_finding(
+        reason: str,
+        message: str,
+        severity: Severity,
+        action: str,
+        affected: list[str],
+    ) -> None:
+        findings.append(
+            Finding(
+                finding_id="",
+                pool_group=group,
+                dataset_id=None,
+                affected_datasets=affected,
+                component="metadata",
+                severity=severity,
+                reason_code=reason,
+                message=message,
+                evidence_metric=None,
+                evidence_value=None,
+                recommended_action=action,
+            )
+        )
+
+    # Ambiguous quality encoding (review round 4): the classic Phred+64
+    # signature is valid under BOTH encodings, so the scan flagged it instead
+    # of guessing a rejection; ambiguity withholds automatic approval (REVIEW)
+    # but never blocks the report.
+    for o in outcomes:
+        if o.fastq is None:
+            continue
+        strands = [o.fastq.r1] + ([o.fastq.r2] if o.fastq.r2 is not None else [])
+        if not any(s.encoding_ambiguous for s in strands):
+            continue
+        if status == CheckStatus.PASS:
+            status = CheckStatus.REVIEW
+        single_finding(
+            "QUALITY_ENCODING_AMBIGUOUS",
+            f"Dataset {o.spec.dataset_id!r} FASTQ carries the classic Phred+64 "
+            "signature (every quality byte >= 64, some >= 90), which is valid "
+            "under BOTH encodings (Sanger FASTQ spans Q0-93, ASCII 33-126). "
+            "Metrics are computed under Phred+33, v1's declared reading; ASCII "
+            "ranges cannot distinguish the encodings, so this group cannot be "
+            "automatically approved.",
+            Severity.WARNING,
+            "Verify the file's true encoding at its source: a Phred+64 file "
+            "must be re-exported as Phred+33 (its qualities would otherwise "
+            "read shifted by +31). Never modify the data to pass validation.",
+            [o.spec.dataset_id],
+        )
+
     samples = distinct(s.sample_id for s in specs)
     if len(samples) > 1:
         status = CheckStatus.FAIL

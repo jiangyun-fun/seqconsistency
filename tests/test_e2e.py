@@ -701,3 +701,56 @@ def test_uncalibrated_findings_stream_completely(tmp_path):
     decisions = pq.read_table(out["decisions"]).to_pylist()
     assert decisions[0]["overall_decision"] == "REVIEW"
     assert "TECH_THRESHOLD_UNCALIBRATED" in decisions[0]["reason_codes"]
+
+
+def test_ambiguous_encoding_warns_and_withholds_approval(tmp_path: Path):
+    # Review round 4: a dataset whose FASTQ carries the classic Phred+64
+    # signature (valid under both encodings) no longer aborts the run — the
+    # scan completes, the group gets a QUALITY_ENCODING_AMBIGUOUS warning, and
+    # the decision is REVIEW (ambiguity never auto-approves, never blocks).
+    from helpers import run_cli
+
+    write_pe(tmp_path, "ok", 200, seed=300)
+    amb = tmp_path / "amb.fastq"
+    amb.write_bytes(
+        b"".join(
+            b"@r%d\nACGT\n+\n" % i + bytes([93] * 4) + b"\n" for i in range(200)
+        )
+    )
+    rows = [
+        {
+            "dataset_id": "ok",
+            "pool_group": "g",
+            "sample_id": "s1",
+            "library_id": "l1",
+            "assay": "WGS",
+            "platform": "ILLUMINA",
+            "read_type": "merged_short",
+            "input_format": "fastq",
+            "path1": str(tmp_path / "ok_R1.fastq"),
+            "processing_id": "p1",
+        },
+        {
+            "dataset_id": "amb",
+            "pool_group": "g",
+            "sample_id": "s1",
+            "library_id": "l1",
+            "assay": "WGS",
+            "platform": "ILLUMINA",
+            "read_type": "merged_short",
+            "input_format": "fastq",
+            "path1": str(amb),
+            "processing_id": "p1",
+        },
+    ]
+    manifest = write_tsv_manifest(tmp_path / "m.tsv", rows)
+    policy = write_policy(tmp_path / "p.yaml")
+    result, out, _ = run_cli(tmp_path / "run", manifest, policy, expect_code=1)
+    findings = pq.read_table(out["findings"]).to_pylist()
+    enc = [f for f in findings if f["reason_code"] == "QUALITY_ENCODING_AMBIGUOUS"]
+    assert len(enc) == 1
+    assert enc[0]["affected_datasets"] == ["amb"]
+    decisions = pq.read_table(out["decisions"]).to_pylist()
+    assert decisions[0]["metadata_status"] == "REVIEW"
+    assert decisions[0]["overall_decision"] == "REVIEW"
+    assert "QUALITY_ENCODING_AMBIGUOUS" in decisions[0]["reason_codes"]
