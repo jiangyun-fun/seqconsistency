@@ -420,12 +420,14 @@ class StrandStats:
             )
         if st.min_qual_byte >= LIKELY_P64_MIN_BYTE and st.max_qual_byte >= LIKELY_P64_MAX_BYTE:
             raise InputDataError(
-                "quality encoding rejected: every quality byte >= ASCII 64 with "
-                f"maximum {st.max_qual_byte} carries the classic Phred+64 signature "
-                "(no base below Q31 and some above Q57 under Phred+33, which no "
-                "platform emits); v1 supports Phred+33 only — ASCII ranges alone "
-                "cannot always distinguish encodings, so this heuristic is "
-                "documented in the README",
+                "quality encoding rejected: EVERY quality byte in this file is "
+                f">= ASCII 64 and the maximum is {st.max_qual_byte} — the classic "
+                "Phred+64 signature (under Phred+33 this means every base >= Q31 "
+                "with some >= Q58, which no standard platform emits; a mixed file "
+                "with any lower-quality base is accepted as Phred+33). v1 supports "
+                "Phred+33 only, and ASCII ranges alone cannot always distinguish "
+                "encodings; the exact rule and the resolution for genuinely "
+                "uniform-high Phred+33 files are documented in the README",
                 source=self.source,
             )
         arr, ov, un, n = self._gc
