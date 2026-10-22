@@ -521,11 +521,14 @@ removed and anything already published by this run is removed best-effort.
   [benchmarks/results-2026-10-21.md](benchmarks/results-2026-10-21.md) (real
   measurements recorded by `benchmarks/bench.py`; regenerate with
   `pixi run -- python benchmarks/bench.py run --data-dir <dir> --results-out <json>`).
-  Headline (x86_64 Linux, Python 3.12, single scan process): SE FASTQ 125k reads/s
-  (12.5 M bases/s; gzip ≈ same), PE FASTQ 56.6k pairs/s including per-pair name
-  synchronization, long-read FASTQ 23 M bases/s at ≈0.5 GiB peak RSS, BAM 61k
-  records/s (pysam per-record access dominates), peak RSS flat when reads grow 4×
-  at fixed `--sample-size`.
+  Headline (x86_64 Linux, Python 3.12, single scan process): SE FASTQ 128k reads/s
+  (12.8 M bases/s; gzip ≈ same), PE FASTQ 57.4k pairs/s including per-pair name
+  synchronization, long-read FASTQ 23.3 M bases/s at ≈0.5 GiB peak RSS, BAM 64k
+  records/s (pysam per-record access dominates; the per-mate reservoirs cost
+  nothing measurable), peak RSS flat when reads grow 4× at fixed
+  `--sample-size`. After the sorted-input Wasserstein and streaming comparison
+  stage, pair-scaling wall time dropped 32–65% across 5–40-dataset groups versus
+  the previous measurement of the same workloads (same host).
 
 ## Python API
 

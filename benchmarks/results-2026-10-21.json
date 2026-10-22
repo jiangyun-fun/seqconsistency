@@ -3,7 +3,7 @@
   "python": "3.12.15",
   "machine": "x86_64",
   "host": "jiangy-Precision-5820-Tower",
-  "timestamp": "2026-10-21T17:02:16+0800",
+  "timestamp": "2026-10-21T18:52:50+0800",
   "settings": {
     "reads": 2000000,
     "long_reads": 400000,
@@ -17,10 +17,10 @@
       "kind": "fastq_se",
       "reads": 2000000,
       "bases": 200000000,
-      "wall_s": 16.044,
-      "reads_per_s": 124660,
-      "bases_per_s": 12466014,
-      "peak_rss_mib": 209.3,
+      "wall_s": 15.656,
+      "reads_per_s": 127745,
+      "bases_per_s": 12774516,
+      "peak_rss_mib": 205.0,
       "file_bytes": 436888890
     },
     {
@@ -28,98 +28,98 @@
       "kind": "fastq_se",
       "reads": 2000000,
       "bases": 200000000,
-      "wall_s": 16.797,
-      "reads_per_s": 119071,
-      "bases_per_s": 11907107,
-      "peak_rss_mib": 209.3,
+      "wall_s": 16.571,
+      "reads_per_s": 120692,
+      "bases_per_s": 12069220,
+      "peak_rss_mib": 208.0,
       "file_bytes": 72072652
     },
     {
       "kind": "fastq_pe",
       "reads": 2000000,
       "bases": 400000000,
-      "wall_s": 35.332,
-      "reads_per_s": 56606,
-      "bases_per_s": 11321110,
-      "peak_rss_mib": 248.6
+      "wall_s": 34.834,
+      "reads_per_s": 57415,
+      "bases_per_s": 11483026,
+      "peak_rss_mib": 246.4
     },
     {
       "path": "/tmp/seqc-bench/ont.fastq",
       "kind": "fastq_se",
       "reads": 400000,
       "bases": 4483137783,
-      "wall_s": 194.222,
-      "reads_per_s": 2060,
-      "bases_per_s": 23082589,
-      "peak_rss_mib": 543.5,
+      "wall_s": 192.8,
+      "reads_per_s": 2075,
+      "bases_per_s": 23252819,
+      "peak_rss_mib": 541.8,
       "file_bytes": 8973364456
     },
     {
       "kind": "bam",
       "reads": 500000,
       "bases": 50000000,
-      "wall_s": 8.164,
-      "reads_per_s": 61246,
-      "bases_per_s": 6124569,
-      "peak_rss_mib": 543.5
+      "wall_s": 7.805,
+      "reads_per_s": 64058,
+      "bases_per_s": 6405810,
+      "peak_rss_mib": 541.8
     },
     {
       "kind": "worker_scaling",
       "workers": 1,
       "datasets": 4,
       "reads": 200000,
-      "wall_s": 5.614,
-      "child_peak_rss_mib": 543.5
+      "wall_s": 5.232,
+      "child_peak_rss_mib": 541.8
     },
     {
       "kind": "worker_scaling",
       "workers": 2,
       "datasets": 4,
       "reads": 200000,
-      "wall_s": 4.242,
-      "child_peak_rss_mib": 543.5
+      "wall_s": 3.695,
+      "child_peak_rss_mib": 541.8
     },
     {
       "kind": "worker_scaling",
       "workers": 4,
       "datasets": 4,
       "reads": 200000,
-      "wall_s": 4.006,
-      "child_peak_rss_mib": 543.5
+      "wall_s": 3.015,
+      "child_peak_rss_mib": 541.8
     },
     {
       "kind": "pair_scaling",
       "datasets": 5,
       "pairs": 10,
       "rows": 40,
-      "wall_s": 1.7737
+      "wall_s": 0.6266
     },
     {
       "kind": "pair_scaling",
       "datasets": 10,
       "pairs": 45,
       "rows": 180,
-      "wall_s": 6.8883
+      "wall_s": 3.8287
     },
     {
       "kind": "pair_scaling",
       "datasets": 20,
       "pairs": 190,
       "rows": 760,
-      "wall_s": 24.6925
+      "wall_s": 14.6162
     },
     {
       "kind": "pair_scaling",
       "datasets": 40,
       "pairs": 780,
       "rows": 3120,
-      "wall_s": 91.4229
+      "wall_s": 61.9735
     },
     {
       "kind": "parquet_write",
       "rows": 2000000,
-      "wall_s": 9.485,
-      "rows_per_s": 210854,
+      "wall_s": 8.311,
+      "rows_per_s": 240640,
       "output_mb": 11.62
     },
     {
@@ -127,10 +127,10 @@
       "kind": "memory_vs_reads",
       "reads": 150000,
       "bases": 1130359942,
-      "wall_s": 51.985,
-      "reads_per_s": 2885,
-      "bases_per_s": 21744137,
-      "peak_rss_mib": 967.8,
+      "wall_s": 47.053,
+      "reads_per_s": 3188,
+      "bases_per_s": 24023055,
+      "peak_rss_mib": 959.7,
       "file_bytes": 2263308774,
       "sample_size": 100000
     },
@@ -139,10 +139,10 @@
       "kind": "memory_vs_reads",
       "reads": 600000,
       "bases": 4509544943,
-      "wall_s": 191.879,
-      "reads_per_s": 3127,
-      "bases_per_s": 23501976,
-      "peak_rss_mib": 967.8,
+      "wall_s": 187.17,
+      "reads_per_s": 3206,
+      "bases_per_s": 24093369,
+      "peak_rss_mib": 959.7,
       "file_bytes": 9029778776,
       "sample_size": 100000
     }
