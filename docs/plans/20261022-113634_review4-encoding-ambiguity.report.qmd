@@ -1,0 +1,501 @@
+---
+title: "seqconsistency — review round 4 report: encoding ambiguity warns instead of rejecting"
+author: "Yun Jiang"
+date: today
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    toc-expand: true
+    html-math-method: mathjax
+    grid:
+      margin-width: 400px
+include-in-header:
+  text: |
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔎</text></svg>">
+---
+
+<!-- Plan: docs/plans/20261022-112421_review4-encoding-ambiguity.plan.qmd -->
+
+## feature
+
+### QUALITY_ENCODING_AMBIGUOUS warning replaces the hard rejection
+
+```
+level: high
+```
+
+#### reason
+
+The end-to-end test proves the new behavior on the reviewer's own example: a uniform-Q60 (`]`) file previously aborted the run (exit 2); it now completes, produces the finding, and yields a REVIEW decision that withholds automatic approval.
+
+#### description
+
+```
+type: [text]
+```
+
+1. The classic Phred+64 signature — whole-file every quality byte ≥ 64 with some ≥ 90 — is valid under BOTH encodings: Sanger FASTQ encodes Phred 0–93 as ASCII 33–126 ([Cock et al., 2010](https://academic.oup.com/nar/article/38/6/1767/3112533)), so Q60 is valid Phred+33 input and the same bytes are routine Q26+ under Phred+64.
+2. The scan no longer raises on the signature: `FastqFileStats.encoding_ambiguous` records it per strand under the declared Phred+33 reading.
+3. `policy._metadata_findings` emits one WARNING per affected dataset naming both readings, the computed-under-+33 fact, and the resolution (verify the encoding at its source; a Phred+64 file must be re-exported, never modified); metadata status becomes REVIEW, so the decision is REVIEW and `QUALITY_ENCODING_AMBIGUOUS` reaches the reason codes.
+4. Bytes outside [33, 126] still abort — the provable violation, unchanged. No override flag, no declaration machinery, no Phred+64 support.
+
+#### before
+
+A valid-if-unusual Phred+33 file (whole-file uniform-high qualities) aborted the run with no processing path, and the rejection asserted "probably Phred+64" as certainty — the pretense the specification forbids.
+
+#### after
+
+Ambiguity is recorded, reported, and decision-visible: the group can never be COMPATIBLE while the doubt stands, and the operator receives a full report instead of an error.
+
+#### evidence
+
+```
+level: high
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+`tests/test_e2e.py::test_ambiguous_encoding_warns_and_withholds_approval` (finding, metadata REVIEW, decision REVIEW, reason code); `tests/test_fastq.py::test_ambiguous_signature_flags_not_rejects` (flag set for `bytes([64,70,80,104])`, unset for uniform `K`); `test_quality_outside_ascii33_126_rejected` unchanged and passing.
+
+:::
+
+## fix
+
+None
+
+## limitation
+
+### v1 reads every input as Phred+33; Phred+64 stays unsupported
+
+```
+level: medium
+```
+
+#### reason
+
+Restated because the new warning makes the boundary visible: ambiguous files are processed under +33, not converted.
+
+#### description
+
+```
+type: [text]
+```
+
+1. A genuine Phred+64 file now flows through with a warning and +31-shifted absolute quality statistics; relative comparisons still function, and cross-encoding groups show enormous quality distances that flag themselves.
+2. Supporting +64 (detection or conversion) remains a future feature per the specification ("For v1, explicitly support Phred+33").
+
+#### evidence
+
+```
+level: high
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+README "Quality encoding" section; spec §FASTQ validation.
+
+:::
+
+## caveat
+
+None
+
+## assumption
+
+### The user confirmed overriding two earlier confirmed decisions
+
+```
+level: high
+```
+
+#### reason
+
+The heuristic was kept by confirmed disposition in rounds 2 and 3; round 4's reframing changed the analysis, and the user confirmed the reversal.
+
+#### description
+
+```
+type: [text]
+```
+
+1. Three considerations moved the position: the specification's rejection criterion is input "known to violate" the encoding (the signature is suspicion, not knowledge); a hard rejection asserts a guess symmetric to the silent-acceptance guess the design rejects; and conditional on the signature firing in 2026, the file is more likely uniform-high Phred+33 (simulators, fixtures) than GAIIx-era Phred+64.
+2. The corruption risk that justified rejection is contained: it requires extinct-format input, mixed groups self-flag through quality distances, and the warning surfaces the doubt on every affected decision.
+
+#### evidence
+
+```
+level: high
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+Disposition message 2026-10-22 (agreement-first analysis); `/tmp/spec_seqc.md` spec wording; user confirmation "Go ahead."
+
+:::
+
+## conclusion
+
+### The last disputed review point is resolved with a semantics both sides can verify
+
+```
+level: high
+```
+
+#### reason
+
+The suite passes (187 non-slow at commit time; full run below), and the behavior difference is pinned by tests at scan, decision, and end-to-end levels.
+
+#### description
+
+```
+type: [text]
+```
+
+1. Valid-but-unusual Phred+33 input is never rejected; genuine encoding mistakes are surfaced as decision-blocking warnings instead of silent corruption or hard failure.
+2. Four review rounds are now fully dispositioned: rounds 1–3 implemented, round 4 implemented after an explicit position reversal.
+
+#### evidence
+
+```
+level: high
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+`/tmp/final_suite_r4.log` (full suite incl. slow); mypy strict and ruff clean at commit `8b11a6f`.
+
+:::
+
+## recommendation
+
+### M: treat COMPATIBLE results as technical assessments only
+
+```
+level: medium
+```
+
+#### reason
+
+Genotype-based identity verification (Phase 3) remains necessary for biological claims.
+
+#### description
+
+```
+type: [text]
+```
+
+1. Pooling decisions rest on technical/metadata/declared-identity components, not verified sample identity.
+
+#### evidence
+
+```
+level: high
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+README "Decision engine".
+
+:::
+
+### L: record calibration provenance next to the policy
+
+```
+level: low
+```
+
+#### reason
+
+`calibrated: true` claims must stay auditable.
+
+#### description
+
+```
+type: [text]
+```
+
+1. When calibrating, record the calibration dataset provenance beside the policy file.
+
+#### evidence
+
+```
+level: unknown
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+None
+
+:::
+
+## next
+
+### M: verify `reference_mismatch: review` behavior
+
+```
+level: medium
+```
+
+#### reason
+
+A parallel-session audit found policy.py emits no finding for differing `reference_id` under `review`.
+
+#### description
+
+```
+type: [text]
+```
+
+1. Add the review finding or a test fixing the semantics.
+
+#### evidence
+
+```
+level: unknown
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+None
+
+:::
+
+### M: decide `same_sample_id_required`/`same_assay_required`
+
+```
+level: medium
+```
+
+#### reason
+
+The keys are parsed but have no behavioral consumer.
+
+#### description
+
+```
+type: [text]
+```
+
+1. Honor them or reject non-default values.
+
+#### evidence
+
+```
+level: unknown
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+None
+
+:::
+
+### M: Phase 2 candidates
+
+```
+level: medium
+```
+
+#### reason
+
+Chosen and specified; blocked only by Phase-2 sequencing.
+
+#### description
+
+```
+type: [text]
+```
+
+1. Sourmash sequence-content comparison, reference-aware coverage comparison, processing-aware merged-read checks, in that order.
+
+#### evidence
+
+```
+level: unknown
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+None
+
+:::
+
+### M: recalibrate example thresholds with genuine between-run data
+
+```
+level: medium
+```
+
+#### reason
+
+Uncalibrated thresholds withhold approval by design.
+
+#### description
+
+```
+type: [text]
+```
+
+1. Follow the README calibration workflow, then set `calibrated: true`.
+
+#### evidence
+
+```
+level: unknown
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+None
+
+:::
+
+### L: remove the stray `utput-format=concise` file in the repo root
+
+```
+level: low
+```
+
+#### reason
+
+Malformed CLI flag artifact.
+
+#### description
+
+```
+type: [text]
+```
+
+1. Delete the file.
+
+#### evidence
+
+```
+level: unknown
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+None
+
+:::
+
+## observation
+
+### The reviewer softened P1 to P2, matching our own frequency analysis
+
+```
+level: medium
+```
+
+#### reason
+
+Both sides converged on the practical-impact assessment from opposite directions.
+
+#### description
+
+```
+type: [text]
+```
+
+1. Round 2 argued the rejection window is effectively synthetic-only; the round-4 review concedes ordinary production files rarely hit it ("calling it universally release-blocking was too strong").
+2. The disagreement that remained — what to do when the window does fire — is what the confirmed design resolves.
+
+#### evidence
+
+```
+level: high
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+Round-4 review text; round-2 report "caveat" section.
+
+:::
+
+## process
+
+### reversed a twice-confirmed position on a better argument
+
+```
+status: right
+```
+
+#### description
+
+```
+type: [text]
+```
+
+1. Rounds 2 and 3 defended the heuristic with the corruption scenario and the spec's fail-fast class; each defense was evidence-based at the time.
+2. Round 4's reframing (declared-reading semantics; the rejection itself asserts a guess; conditional-on-firing frequency) was stronger, and the honest response was to update the recommendation — presented to the user with the reasoning explicit, then implemented only after confirmation.
+3. The lesson recorded: re-examine the framing of a rejected argument, not only its facts, when it returns.
+
+#### evidence
+
+```
+level: high
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+Disposition messages of rounds 2, 3, and 4; user confirmations in the session log.
+
+:::
+
+## change
+
+### Round-4 mutations
+
+```
+level: high
+```
+
+#### reason
+
+Recorded facts from git at commit time.
+
+#### description
+
+```
+type: [table, text]
+```
+
+| Verb | Paths |
+|---|---|
+| Updated | `src/seqconsistency/{fastq,models,policy}.py`, `tests/{test_fastq,test_e2e}.py`, `README.md` |
+| Created | `docs/plans/20261022-112421_review4-encoding-ambiguity.plan.qmd`, this report |
+
+1. Git: `main`, commit `8b11a6f` plus the docs commit carrying this report.
+2. No benchmark impact: no hot-path change; the round-3 measurement stands.
+
+#### evidence
+
+```
+level: high
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+`git log --oneline`; `git status` clean at commit time.
+
+:::
+
+## other
+
+None

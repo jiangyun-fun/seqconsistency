@@ -1,0 +1,76 @@
+---
+title: "seqconsistency — external review round 3 fixes"
+author: "Yun Jiang"
+date: today
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    toc-expand: true
+    html-math-method: mathjax
+    grid:
+      margin-width: 400px
+include-in-header:
+  text: |
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔎</text></svg>">
+---
+
+# Objective
+
+Apply the user-confirmed disposition of external review round 3 (2026-10-22):
+four engineering fixes plus one documentation fix. Point 1 (remove the Phred
+heuristic) was rejected again; only its README workaround wording changes.
+Report: `20261022-*_review3-fixes.report.qmd`.
+
+# Scope (confirmed items)
+
+1. **P2 — StagedWriter cross-call buffering.** `write_rows` flushed per call,
+   so the streaming pipeline produced one Parquet row group per pair and per
+   finding (measured: 2000 row groups / 3.68 MB vs 1 group / 3.6 KB for 2000
+   rows). Fix: bounded buffer across calls, flush at `WRITE_BATCH_ROWS`,
+   flush remainder on close. Regression test on row-group count and size.
+2. **P2 — findings emitted as produced.** `tech_findings` accumulated one
+   group's findings (O(pairs × metrics)). Fix: pipeline emits each finding as
+   `TechnicalAssessment.feed` returns it, retains only statuses, a unique
+   reason-code list, component findings, and the bounded HTML preview;
+   `finalize_group_decision` takes `tech_reason_codes` instead of a findings
+   list; `evaluate_group` derives codes for its callers.
+3. **P2 — runtime BLAS/OpenMP limits.** `_worker_init`'s env `setdefault`
+   runs after NumPy import and caps nothing (measured: 12 threads before and
+   after). Fix: `threadpoolctl` runtime limits in workers and around the
+   main-process comparison stage (`main_threads` from `ResourceConfig`);
+   regression test introspects actual pool limits; README resource bullet
+   corrected.
+4. **P2 — reasons for INSUFFICIENT_EVIDENCE.** INSUFFICIENT_OBSERVATIONS and
+   MISSING_EVIDENCE rows worsened status without a finding, so decisions
+   carried no blocking reason (reproduced: MISSING_EVIDENCE, zero findings).
+   Fix: `feed` emits a finding per such row (reason code, datasets, observed
+   counts, required minimum); codes propagate into the decision.
+5. **README wording (point 1 concession).** Remove the "re-encode your
+   qualities" workaround; the resolution is verifying the file's true
+   encoding or reporting the case upstream — the tool never advises altering
+   the data under assessment.
+
+# Files to touch
+
+`src/seqconsistency/{parquet_io,policy,pipeline}.py`, `pyproject.toml`,
+`pixi.toml`/lock (threadpoolctl), `tests/**`, `README.md`,
+`benchmarks/results-2026-10-21.*` (re-measured), `docs/**`.
+
+# Verification (results)
+
+Executed 2026-10-22; report: `20261022-113634_review3-fixes.report.qmd`.
+
+1. All regression tests added (row groups; batch-boundary flush; abort logging; streamed findings 793/793; pool limits introspected and GC-stable; insufficient-evidence findings with counts).
+2. Full suite 188 passed (incl. slow); mypy strict and ruff clean.
+3. First benchmark run DISCARDED (contention signature: uniform slowdown on untouched paths, gate fired at load1 3.99); clean re-run under a tightened gate (load1<2/load5<3, started 1.72) committed as `results-2026-10-22.{json,md}`: FASTQ +1.3..+3.3% (noise), pair scaling +3.6..+6.8% (noise), BAM 59.2k rec/s (within its ±8% same-code band), memory flat.
+4. Examples unchanged.
+
+# Original verification plan (superseded above)
+
+1. Regression test per fix (row groups; streaming emission; pool limits;
+   insufficient-evidence findings with counts; abort logging test added).
+2. Full suite green including slow tests; mypy and ruff clean.
+3. Benchmarks re-measured idle-gated (StagedWriter batching and thread limits
+   touch the parquet-write and pair-scaling entries).
+4. Examples re-run; decisions and reason codes inspected.

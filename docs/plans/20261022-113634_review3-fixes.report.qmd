@@ -1,0 +1,655 @@
+---
+title: "seqconsistency — external review round 3 fixes report"
+author: "Yun Jiang"
+date: today
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    toc-expand: true
+    html-math-method: mathjax
+    grid:
+      margin-width: 400px
+include-in-header:
+  text: |
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔎</text></svg>">
+---
+
+<!-- Plan: docs/plans/20261022-103058_review3-fixes.plan.qmd -->
+
+## feature
+
+None
+
+## fix
+
+### Row groups batch across write_rows calls
+
+```
+level: high
+```
+
+#### reason
+
+The reproduction measured 2000 single-row calls producing 2000 row groups and 3.68 MB against 1 group and 3.6 KB batched; three new tests lock row-group count, batch-boundary flushing, and abort logging.
+
+#### description
+
+```
+type: [statistic]
+```
+
+1. `StagedWriter.write_rows` flushed every call, so the round-2 streaming pipeline wrote one tiny Parquet row group per pair and per finding — a 1024x size inflation on the reproduction.
+2. The buffer now spans calls, flushes at `WRITE_BATCH_ROWS`, and flushes the remainder on `close_publish`; `abort()` discards it (the staged file is unlinked).
+3. The abort test also closes the round-2 follow-up: cleanup failures are logged with `exc_info` and never raise.
+
+#### before
+
+Findings and comparison Parquet files grew ~1.8 KB per row in row-group metadata alone under per-row streaming writes.
+
+#### after
+
+Row groups are bounded by the configured batch size (65,536 rows); the 2000-row reproduction writes one group.
+
+#### evidence
+
+```
+level: high
+type: [statistic]
+```
+
+::: {.callout-note collapse="true"}
+
+`tests/test_parquet_io.py::test_write_rows_batches_across_calls`, `test_write_rows_flushes_at_batch_size`, `test_abort_logs_cleanup_failures_and_never_raises`; reproduction at `/tmp/repro_round3.py` (3.68 MB vs 3.6 KB measured).
+
+:::
+
+### INSUFFICIENT_EVIDENCE decisions state their blocking reason
+
+```
+level: high
+```
+
+#### reason
+
+Reproduced first (status MISSING_EVIDENCE, zero findings), then fixed and locked by a test asserting the finding content and the decision reason codes.
+
+#### description
+
+```
+type: [text]
+```
+
+1. `TechnicalAssessment.feed` now emits a WARNING finding for every INSUFFICIENT_OBSERVATIONS or MISSING_EVIDENCE row: the comparison reason code, affected datasets, observed counts, and the policy minimum (for insufficient observations).
+2. The codes propagate into the decision row's `reason_codes` automatically, so an INSUFFICIENT_EVIDENCE decision explains itself.
+
+#### before
+
+A decision could be INSUFFICIENT_EVIDENCE with only `IDENTITY_DECLARED_NOT_VERIFIED` in its reason codes.
+
+#### after
+
+The same decision carries `TECH_BELOW_MIN_OBSERVATIONS` (or the missing-evidence reason) with counts and the minimum in the findings table.
+
+#### evidence
+
+```
+level: high
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+`tests/test_policy.py::test_insufficient_observations_produce_findings_and_reason_codes`.
+
+:::
+
+### Findings stream out as they are produced
+
+```
+level: high
+```
+
+#### reason
+
+A 12-dataset uncalibrated run streams all 793 findings (66 pairs x 12 rows + identity) exactly once with sequential unique IDs — the emission path is complete and duplicate-free.
+
+#### description
+
+```
+type: [text]
+```
+
+1. The pipeline emitted component findings before the pair loop, each technical finding as `feed` returned it, the finalize tail, then the fastp finding; retained per group are only the component findings (bounded by dataset count) and a unique reason-code list.
+2. `finalize_group_decision` takes `tech_reason_codes` instead of a findings list and returns only the findings it creates; `evaluate_group` derives codes for its callers.
+3. A first cut returned component findings twice from `finalize_group_decision`; the finding-ID determinism test caught the aliasing before commit.
+
+#### before
+
+One group's technical findings (O(pairs x metrics) under an uncalibrated policy) accumulated in memory before a single end-of-group emission.
+
+#### after
+
+In-memory finding state per group is the bounded component list plus a small code list; the StagedWriter batches rows.
+
+#### evidence
+
+```
+level: high
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+`tests/test_e2e.py::test_uncalibrated_findings_stream_completely`, `test_finding_ids_deterministic`.
+
+:::
+
+### Native thread pools limited at runtime
+
+```
+level: high
+```
+
+#### reason
+
+Direct measurement: OpenBLAS runs 12 threads before and after the late env changes and 1 thread when the env is set before import; two new tests introspect actual pool settings after `_worker_init`.
+
+#### description
+
+```
+type: [text]
+```
+
+1. `_worker_init` set `OMP/OPENBLAS/MKL_NUM_THREADS` with `setdefault` after NumPy loads — provably ineffective; the README's per-worker cap claim was false in effect.
+2. `threadpoolctl` (new explicit dependency, pixi + pyproject) limits the pools at runtime: per worker in `_worker_init`, and to `ResourceConfig.main_threads` around the main-process comparison stage; the controller stays referenced so garbage collection cannot undo it.
+3. `pyproject` gained a mypy override (threadpoolctl ships no types).
+
+#### before
+
+BLAS pools ran at full core count regardless of the `--threads` budget; the README claimed otherwise.
+
+#### after
+
+Pool settings are verified by test (<= 1 and <= 2 threads after init, surviving `gc.collect()`); the README states the runtime mechanism and why env defaults are insufficient.
+
+#### evidence
+
+```
+level: high
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+`tests/test_resources.py`; subprocess measurement in `/tmp/repro_round3.py` (12 vs 1 threads).
+
+:::
+
+## limitation
+
+### The comparison stage is clamped to the documented remainder budget
+
+```
+level: medium
+```
+
+#### reason
+
+Stated because a reviewer may expect the comparison stage to use all cores once workers finish; the behavior follows the README's documented budget rule.
+
+#### description
+
+```
+type: [text]
+```
+
+1. `ResourceConfig` assigns `main_threads` (the remainder) to the main process, and the comparison loop is clamped to it even when scan workers are already done.
+2. The measured effect is within noise (worker-4 CLI run: 3.02 s vs 2.94 s); relaxing it would contradict the documented rule.
+
+#### evidence
+
+```
+level: medium
+type: [statistic]
+```
+
+::: {.callout-note collapse="true"}
+
+`benchmarks/results-2026-10-22.json` worker_scaling entries; `src/seqconsistency/models.py` ResourceConfig docstring.
+
+:::
+
+## caveat
+
+### BAM benchmark entries vary ±8% across same-code runs
+
+```
+level: medium
+```
+
+#### reason
+
+Three same-code runs measured 61.2k / 64.1k / 59.2k records/s on this host; single-run deltas within that band are not evidence of regression or improvement.
+
+#### description
+
+```
+type: [text]
+```
+
+1. The README headline now carries the variance note; cross-version claims about BAM throughput should compare medians of multiple runs.
+
+#### evidence
+
+```
+level: high
+type: [statistic]
+```
+
+::: {.callout-note collapse="true"}
+
+`benchmarks/results-2026-10-21.json` (two runs) and `results-2026-10-22.json`.
+
+:::
+
+## assumption
+
+None
+
+## conclusion
+
+### All four confirmed round-3 fixes are implemented, tested, and measured
+
+```
+level: high
+```
+
+#### reason
+
+The suite passed at 188 tests (including slow memory tests) after the fixes; the clean re-measurement records the post-fix numbers.
+
+#### description
+
+```
+type: [text]
+```
+
+1. Parquet row groups batch across calls; findings and comparison rows stream with bounded retention; decisions explain INSUFFICIENT_EVIDENCE; thread pools are limited at runtime and verified.
+2. The one rejected point (removing the Phred heuristic) was re-argued by the reviewer in round 4 and resolved there by user confirmation.
+
+#### evidence
+
+```
+level: high
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+`/tmp/final_suite_r3.log`: 188 passed in 197 s; mypy strict and ruff clean; `benchmarks/results-2026-10-22.json`.
+
+:::
+
+## recommendation
+
+### M: treat COMPATIBLE results as technical assessments only
+
+```
+level: medium
+```
+
+#### reason
+
+Genotype-based identity verification (Phase 3) remains necessary for biological claims.
+
+#### description
+
+```
+type: [text]
+```
+
+1. Pooling decisions rest on technical/metadata/declared-identity components, not verified sample identity.
+
+#### evidence
+
+```
+level: high
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+README "Decision engine"; decisions table `identity_evidence_level` column.
+
+:::
+
+### L: record calibration provenance next to the policy
+
+```
+level: low
+```
+
+#### reason
+
+`calibrated: true` claims must stay auditable.
+
+#### description
+
+```
+type: [text]
+```
+
+1. When calibrating, record the calibration dataset provenance beside the policy file.
+
+#### evidence
+
+```
+level: unknown
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+None
+
+:::
+
+## next
+
+### M: verify `reference_mismatch: review` behavior
+
+```
+level: medium
+```
+
+#### reason
+
+A parallel-session audit found policy.py emits no finding for differing `reference_id` under `review`.
+
+#### description
+
+```
+type: [text]
+```
+
+1. Add the review finding or a test fixing the semantics.
+
+#### evidence
+
+```
+level: unknown
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+None
+
+:::
+
+### M: decide `same_sample_id_required`/`same_assay_required`
+
+```
+level: medium
+```
+
+#### reason
+
+The keys are parsed but have no behavioral consumer.
+
+#### description
+
+```
+type: [text]
+```
+
+1. Honor them or reject non-default values.
+
+#### evidence
+
+```
+level: unknown
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+None
+
+:::
+
+### M: Phase 2 candidates
+
+```
+level: medium
+```
+
+#### reason
+
+Chosen and specified; blocked only by Phase-2 sequencing.
+
+#### description
+
+```
+type: [text]
+```
+
+1. Sourmash sequence-content comparison, reference-aware coverage comparison, processing-aware merged-read checks, in that order.
+
+#### evidence
+
+```
+level: unknown
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+None
+
+:::
+
+### M: recalibrate example thresholds with genuine between-run data
+
+```
+level: medium
+```
+
+#### reason
+
+Uncalibrated thresholds withhold approval by design.
+
+#### description
+
+```
+type: [text]
+```
+
+1. Follow the README calibration workflow, then set `calibrated: true`.
+
+#### evidence
+
+```
+level: unknown
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+None
+
+:::
+
+### L: remove the stray `utput-format=concise` file in the repo root
+
+```
+level: low
+```
+
+#### reason
+
+Malformed CLI flag artifact.
+
+#### description
+
+```
+type: [text]
+```
+
+1. Delete the file.
+
+#### evidence
+
+```
+level: unknown
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+None
+
+:::
+
+## observation
+
+### Clean re-measurement after discarding a contended run
+
+```
+level: high
+```
+
+#### reason
+
+Both runs are in the record; the contrast quantifies what contention does to these benchmarks.
+
+#### description
+
+```
+type: [table]
+```
+
+| Workload | Round-2 baseline | Contended (discarded) | Clean re-run |
+|---|---:|---:|---:|
+| Pair scaling 5 ds | 0.627 s | 1.215 s | 0.669 s |
+| Pair scaling 40 ds | 61.97 s | 68.43 s | 64.89 s |
+| SE FASTQ | 127.7k reads/s | 124.0k | 129.5k |
+| BAM | 64.1k rec/s | 57.7k | 59.2k |
+| Peak RSS 600k reads | 959.7 MiB | 958.9 MiB | 958.8 MiB |
+
+The contended run showed a uniform 1–10% slowdown on code paths round 3 never touched (FASTQ, BAM scans) with the largest distortion on the shortest measurements — the contention signature. The clean run (started at load1 1.72 under the tightened gate) puts pair scaling within noise of baseline (+3.6–6.8%); memory is flat everywhere.
+
+#### evidence
+
+```
+level: high
+type: [table]
+```
+
+::: {.callout-note collapse="true"}
+
+`/tmp/bench-r3.log` (gate at load1 3.99) vs `/tmp/bench-r3b.log` (gate at load1 1.72); `benchmarks/results-2026-10-22.json`.
+
+:::
+
+## process
+
+### discarded a contended benchmark instead of committing it
+
+```
+status: right
+```
+
+#### description
+
+```
+type: [text]
+```
+
+1. The first post-fix run started at load1 3.99 — inside the old gate but visibly loaded; the uniform cross-path slowdown contradicted the code diff, so the numbers were discarded rather than rationalized.
+2. The gate was tightened (load1 < 2, load5 < 3) and the re-run committed.
+
+#### evidence
+
+```
+level: high
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+`/tmp/bench-r3.log` vs `/tmp/bench-r3b.log`; comparison table in the observation above.
+
+:::
+
+### a first-cut refactor duplicated component findings
+
+```
+status: wrong
+```
+
+#### description
+
+```
+type: [text]
+```
+
+1. The first version of the finalize refactor returned `all_findings` (component + tail), so both the wrapper and the pipeline would have emitted component findings twice.
+2. The finding-ID determinism test caught the aliasing (two list slots, one object, one final ID) before commit; the return contract is now "only findings this function created".
+
+#### evidence
+
+```
+level: high
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+Session log (test run before commit `ea3c06d`); `tests/test_policy.py::test_finding_ids_deterministic`.
+
+:::
+
+## change
+
+### Round-3 mutations
+
+```
+level: high
+```
+
+#### reason
+
+Recorded facts from git at commit time.
+
+#### description
+
+```
+type: [table, text]
+```
+
+| Verb | Paths |
+|---|---|
+| Updated | `src/seqconsistency/{parquet_io,policy,pipeline}.py`, `pyproject.toml`, `pixi.toml`, `pixi.lock`, `README.md`, `tests/test_policy.py`, `tests/test_e2e.py` |
+| Created | `tests/test_parquet_io.py`, `tests/test_resources.py`, `benchmarks/results-2026-10-22.{json,md}`, `docs/plans/20261022-103058_review3-fixes.plan.qmd`, this report |
+
+1. Packages: `threadpoolctl >=3.7,<4` added to the pixi default env (pypi) and `pyproject.toml` dependencies.
+2. Git: `main`, commits `b362235`, `ea3c06d`, `a72a26f`, `0985cc4` plus the docs commit carrying this report.
+
+#### evidence
+
+```
+level: high
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+`git log --oneline`; `git status` clean at commit time.
+
+:::
+
+## other
+
+None

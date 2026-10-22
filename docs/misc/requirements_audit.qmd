@@ -155,3 +155,69 @@ synced the rolling file (this commit also carries a parallel session's
 uncommitted docs/misc entries). Packages: none. Environments: none. Git: main,
 commits 4141a0a, d14c952, 6853486, d4bb895, 5d87c72, 5763a55, 7bebc8a, f9ae9ee
 plus this docs commit.
+
+## Apply external review round 3 fixes
+
+```
+level: high
+date: 2026-10-22
+cross-repo: seqconsistency
+```
+
+### description
+
+Implement the user-confirmed disposition of the third external review: Parquet
+row-group batching across write_rows calls, findings streamed as produced with
+reason codes retained instead of finding objects, runtime BLAS/OpenMP thread
+limits via threadpoolctl, per-row findings for INSUFFICIENT_EVIDENCE causes,
+and README wording for the rejected Phred point.
+
+### result
+
+1. Implemented all four fixes with reproductions first (1024x row-group size
+   inflation; 12-vs-1 BLAS threads; MISSING_EVIDENCE with zero findings).
+2. Caught a duplicated-findings bug in the first streaming refactor with the
+   finding-ID determinism test before commit.
+3. Verified 188 tests (incl. slow) green, mypy strict and ruff clean.
+4. Discarded a contended benchmark run (uniform slowdown on untouched paths)
+   and committed a clean re-measurement under a tightened idle gate.
+
+### change
+
+Files: updated `src/seqconsistency/{parquet_io,policy,pipeline}.py`,
+`pyproject.toml`, `pixi.toml`, `pixi.lock`, `README.md`, 2 test files; created
+`tests/{test_parquet_io,test_resources}.py`,
+`benchmarks/results-2026-10-22.{json,md}`, round-3 plan/report. Packages:
+threadpoolctl >=3.7,<4 -> pixi default env (pypi) + pyproject deps. Git: main,
+commits b362235, ea3c06d, a72a26f, 0985cc4 plus docs.
+
+## Replace Phred ambiguity rejection with a warning that withholds approval
+
+```
+level: high
+date: 2026-10-22
+cross-repo: seqconsistency
+```
+
+### description
+
+Fourth external review re-argued the Phred+64 heuristic with a declared-reading
+framing; the user confirmed the updated disposition reversing the twice-kept
+rejection: the ambiguous signature window warns (QUALITY_ENCODING_AMBIGUOUS,
+group REVIEW) instead of aborting; bytes outside [33,126] still abort; no
+declaration machinery or override flag.
+
+### result
+
+1. Implemented the scan flag, the per-dataset metadata finding, and decision
+   wiring; the reviewer's uniform-Q60 example now yields a REPORTED REVIEW
+   instead of exit 2.
+2. Verified at scan, decision, and end-to-end levels; 187 non-slow tests green
+   at commit, full suite after; mypy and ruff clean.
+3. Verified the format-range citation (Cock et al. 2010) before relying on it.
+
+### change
+
+Files: updated `src/seqconsistency/{fastq,models,policy}.py`,
+`tests/{test_fastq,test_e2e}.py`, `README.md`; created round-4 plan/report.
+Packages: none. Git: main, commit 8b11a6f plus docs.
