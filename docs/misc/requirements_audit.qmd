@@ -221,3 +221,33 @@ declaration machinery or override flag.
 Files: updated `src/seqconsistency/{fastq,models,policy}.py`,
 `tests/{test_fastq,test_e2e}.py`, `README.md`; created round-4 plan/report.
 Packages: none. Git: main, commit 8b11a6f plus docs.
+
+## Fix reference_mismatch review no-op
+
+```
+level: high
+date: 2026-10-22
+cross-repo: seqconsistency
+```
+
+### description
+
+Fifth external review (corroborating a parallel-session audit): the policy
+loader accepts `review | incompatible` for `metadata.reference_mismatch`, but
+only the incompatible branch existed — under review, differing manifest
+reference_id values silently kept otherwise passing groups COMPATIBLE.
+
+### result
+
+1. Reproduced first (review -> COMPATIBLE, zero reference findings), then
+   fixed: the review branch emits a GROUP_DIFFERENT_REFERENCES warning and
+   sets metadata REVIEW with the guard that never downgrades an existing FAIL.
+2. Added a two-branch regression test (review -> REVIEW+warning; incompatible
+   -> INCOMPATIBLE, unchanged default); 188 non-slow tests green, mypy and
+   ruff clean.
+
+### change
+
+Files: updated `src/seqconsistency/policy.py`, `tests/test_policy.py`,
+`README.md` (policy comment), `docs/misc/*` (this entry, rolling sync).
+Packages: none. Git: main, one fix commit.
