@@ -264,3 +264,24 @@ Files: updated `docs/misc/requirements_audit.qmd` (this entry),
 `docs/misc/next_and_recommendation.qmd` (rolling sync: dropped the completed
 reference_mismatch item, renumbered). Packages: none. Git: main, one docs
 commit.
+
+## Explain library/assay/platform/reference/fastp column usage
+
+```
+level: low
+date: 2026-10-22
+```
+
+### description
+
+The user asked what the manifest columns library_id, assay, platform,
+reference_id, and fastp_json are used for in the tool.
+
+### result
+
+1. Answered per column with code evidence: metadata group checks in policy.py, assay-scoped thresholds, reference declarations vs BAM header dictionaries, and the fastp evidence flow; no code changed.
+
+### change
+
+Files: appended this audit entry (rolling file unchanged — no item completed).
+Packages: none. Git: main, one docs commit.
