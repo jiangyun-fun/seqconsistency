@@ -8,6 +8,7 @@ from pathlib import Path
 import pyarrow.parquet as pq
 
 from helpers import (
+    MINIMAL_POLICY,
     make_bam,
     make_records,
     write_fastq,
@@ -659,3 +660,44 @@ def test_large_group_streams_comparisons_and_report(tmp_path):
     assert r.returncode == 1, r.stderr  # same REVIEW outcome as the first run
     html_text = report.read_text()
     assert f"Showing up to 500 rows of {435 * 12}" in html_text
+
+
+def test_uncalibrated_findings_stream_completely(tmp_path):
+    # Review round 3, point 3: findings emitted per pair as feed() returns
+    # them (never accumulated per group). With an uncalibrated policy every
+    # PASSING row emits a finding: 12 datasets -> 66 pairs x 12 rows = 792
+    # technical findings + 1 identity finding, all written exactly once with
+    # sequential unique IDs.
+    from helpers import run_cli
+
+    files = [write_pe(tmp_path, f"d{i}", 60, seed=200 + i) for i in range(12)]
+    rows = [
+        {
+            "dataset_id": f"d{i}",
+            "pool_group": "g",
+            "sample_id": "s1",
+            "library_id": "l1",
+            "assay": "WGS",
+            "platform": "ILLUMINA",
+            "read_type": "paired_short",
+            "input_format": "fastq",
+            "path1": str(p1),
+            "path2": str(p2),
+            "processing_id": "p1",
+        }
+        for i, (p1, p2) in enumerate(files)
+    ]
+    manifest = write_tsv_manifest(tmp_path / "m.tsv", rows)
+    policy = write_policy(
+        tmp_path / "p.yaml", MINIMAL_POLICY.replace("calibrated: true", "calibrated: false")
+    )
+    result, out, _ = run_cli(tmp_path / "run", manifest, policy, workers=2, expect_code=1)
+    findings = pq.read_table(out["findings"]).to_pylist()
+    tech = [f for f in findings if f["component"] == "technical"]
+    assert len(tech) == 66 * 12
+    assert len(findings) == 66 * 12 + 1  # + identity declaration
+    ids = [f["finding_id"] for f in findings]
+    assert ids == sorted(ids) and len(set(ids)) == len(ids)
+    decisions = pq.read_table(out["decisions"]).to_pylist()
+    assert decisions[0]["overall_decision"] == "REVIEW"
+    assert "TECH_THRESHOLD_UNCALIBRATED" in decisions[0]["reason_codes"]

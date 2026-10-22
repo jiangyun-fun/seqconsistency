@@ -945,11 +945,14 @@ class TechnicalAssessment:
                 else:
                     message = (
                         f"Comparison for metric {row.get('metric')!r} (stratum "
-                        f"{row.get('stratum')}) between "
-                        f"{row.get('dataset_a')!r} and {row.get('dataset_b')!r} "
-                        f"lacks required evidence ({reason})."
+                        f"{row.get('stratum')}) between {row.get('dataset_a')!r} "
+                        f"and {row.get('dataset_b')!r} lacks required evidence "
+                        f"({reason})."
                     )
-                    action = "Supply the missing evidence or disable its policy requirement knowingly."
+                    action = (
+                        "Supply the missing evidence or disable its policy "
+                        "requirement knowingly."
+                    )
                 finding(
                     reason,
                     message,
@@ -1108,22 +1111,25 @@ def finalize_group_decision(
     identity_level: IdentityEvidenceLevel,
     component_findings: list[Finding],
     technical_status: CheckStatus,
-    tech_findings: list[Finding],
+    tech_reason_codes: list[str],
 ) -> tuple[GroupDecision, list[Finding]]:
     """Assemble one group's decision from precomputed component results.
 
-    The pipeline computes components incrementally (streaming comparisons feed a
-    TechnicalAssessment); this function owns the fastp-evidence rule, the
-    aggregation precedence, and the GroupDecision.
+    The pipeline streams technical findings out as ``TechnicalAssessment.feed``
+    produces them (memory stays bounded by one batch); it passes only the
+    unique reason codes here. This function owns the fastp-evidence rule, the
+    aggregation precedence, and the GroupDecision; it returns the decision and
+    only the findings IT created (the fastp finding) for the caller to emit.
     """
     group = outcomes[0].spec.pool_group
+    tail_findings: list[Finding] = []
 
     # fastp evidence requirement (merged_short).
     if outcomes[0].spec.read_type.value == "merged_short" and policy.require_fastp_evidence:
         missing = [o.spec.dataset_id for o in outcomes if o.fastp is None]
         if missing:
             technical_status = _worse(technical_status, CheckStatus.REVIEW)
-            tech_findings.append(
+            tail_findings.append(
                 Finding(
                     finding_id="",
                     pool_group=group,
@@ -1158,7 +1164,7 @@ def finalize_group_decision(
     else:
         overall = DecisionState.COMPATIBLE
 
-    all_findings = component_findings + tech_findings
+    all_findings = component_findings + tail_findings
     assumptions: list[str] = []
     if identity_level is IdentityEvidenceLevel.DECLARED_ONLY:
         assumptions.append("identity_declared_not_verified")
@@ -1170,6 +1176,9 @@ def finalize_group_decision(
     for f in all_findings:
         if f.reason_code not in reason_codes:
             reason_codes.append(f.reason_code)
+    for code in tech_reason_codes:
+        if code not in reason_codes:
+            reason_codes.append(code)
 
     decision = GroupDecision(
         pool_group=group,
@@ -1182,7 +1191,7 @@ def finalize_group_decision(
         assumptions=assumptions,
         reason_codes=reason_codes,
     )
-    return decision, all_findings
+    return decision, tail_findings
 
 
 def evaluate_group(
@@ -1204,7 +1213,11 @@ def evaluate_group(
     technical_status, tech_findings = _technical_assessment(
         comparison_rows, policy, profile, assay
     )
-    return finalize_group_decision(
+    tech_reason_codes: list[str] = []
+    for f in tech_findings:
+        if f.reason_code not in tech_reason_codes:
+            tech_reason_codes.append(f.reason_code)
+    decision, tail = finalize_group_decision(
         outcomes,
         policy,
         metadata_status,
@@ -1212,8 +1225,9 @@ def evaluate_group(
         identity_level,
         component_findings,
         technical_status,
-        tech_findings,
+        tech_reason_codes,
     )
+    return decision, component_findings + tech_findings + tail
 
 
 def assign_finding_ids(findings: list[Finding]) -> list[Finding]:

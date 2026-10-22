@@ -313,8 +313,15 @@ def run_check(config: CheckConfig) -> int:
                 identity_level,
                 component_findings,
             ) = group_components(members, policy)
+            # Findings stream out as they are produced (review round 3, point
+            # 3): retained per group are only the component findings (bounded
+            # by dataset count) and a unique reason-code list — never one
+            # group's full technical findings.
+            for f in component_findings:
+                _emit_finding(f)
             assessment = TechnicalAssessment(policy, profile, assay)
-            tech_findings: list[Finding] = []
+            tech_reason_codes: list[str] = []
+
             for id_a, id_b in generate_pairs(list(by_id)):
                 pair_rows = compare_pair(
                     group,
@@ -329,10 +336,16 @@ def run_check(config: CheckConfig) -> int:
                 comparisons_total += len(pair_rows)
                 if config.report_out is not None and len(html_comparisons) < MAX_COMPARISONS:
                     html_comparisons.extend(pair_rows[: MAX_COMPARISONS - len(html_comparisons)])
-                tech_findings.extend(assessment.feed(pair_rows))
+                for f in assessment.feed(pair_rows):
+                    _emit_finding(f)
+                    if f.reason_code not in tech_reason_codes:
+                        tech_reason_codes.append(f.reason_code)
             technical_status, tail = assessment.finalize()
-            tech_findings.extend(tail)
-            decision, group_findings = finalize_group_decision(
+            for f in tail:
+                _emit_finding(f)
+                if f.reason_code not in tech_reason_codes:
+                    tech_reason_codes.append(f.reason_code)
+            decision, new_findings = finalize_group_decision(
                 members,
                 policy,
                 metadata_status,
@@ -340,10 +353,10 @@ def run_check(config: CheckConfig) -> int:
                 identity_level,
                 component_findings,
                 technical_status,
-                tech_findings,
+                tech_reason_codes,
             )
             decisions_rows.append(decision.to_row(policy))
-            for f in group_findings:
+            for f in new_findings:
                 _emit_finding(f)
     except BaseException:
         comparison_writer.abort()
