@@ -525,17 +525,19 @@ removed and anything already published by this run is removed best-effort.
 - Worker exceptions propagate with dataset context, cancel pending futures, and no
   outputs are published (tested).
 - Measured throughput/memory for this code version: see
-  [benchmarks/results-2026-10-21.md](benchmarks/results-2026-10-21.md) (real
-  measurements recorded by `benchmarks/bench.py`; regenerate with
+  [benchmarks/results-2026-10-22.md](benchmarks/results-2026-10-22.md) (previous
+  runs kept alongside; real measurements recorded by `benchmarks/bench.py`;
+  regenerate with
   `pixi run -- python benchmarks/bench.py run --data-dir <dir> --results-out <json>`).
-  Headline (x86_64 Linux, Python 3.12, single scan process): SE FASTQ 128k reads/s
-  (12.8 M bases/s; gzip ≈ same), PE FASTQ 57.4k pairs/s including per-pair name
-  synchronization, long-read FASTQ 23.3 M bases/s at ≈0.5 GiB peak RSS, BAM 64k
-  records/s (pysam per-record access dominates; the per-mate reservoirs cost
-  nothing measurable), peak RSS flat when reads grow 4× at fixed
-  `--sample-size`. After the sorted-input Wasserstein and streaming comparison
-  stage, pair-scaling wall time dropped 32–65% across 5–40-dataset groups versus
-  the previous measurement of the same workloads (same host).
+  Headline (x86_64 Linux, Python 3.12, single scan process, idle machine): SE
+  FASTQ 129k reads/s (12.9 M bases/s; gzip ≈ same), PE FASTQ 58.5k pairs/s
+  including per-pair name synchronization, long-read FASTQ 23.8 M bases/s at
+  ≈0.5 GiB peak RSS, BAM 59k records/s (pysam per-record access dominates;
+  observed run-to-run variance for the BAM entry is ±8% across same-code runs),
+  peak RSS flat when reads grow 4× at fixed `--sample-size`. Relative to the
+  pre-streaming baseline (results-2026-10-21, first entry), pair-scaling wall
+  time is down 32–62% across 5–40-dataset groups after the sorted-input
+  Wasserstein and streaming comparison stage.
 
 ## Python API
 
