@@ -112,7 +112,7 @@ consumption in outputs.
 ### result
 
 1. Answered per-column usage traced through `manifest.py`, `policy.py`, and `pipeline.py` (all read this turn), with a metadata-comparison table of reason codes and outcomes.
-2. Answered with two verified observations: `reference_mismatch: review` emits no finding for differing `reference_id` (only the `incompatible` branch exists), and `same_sample_id_required`/`same_assay_required` are parsed but not consulted on the decision path.
+2. Answered with two findings: `reference_mismatch: review` emitted no finding for differing `reference_id`; `same_sample_id_required`/`same_assay_required` were parsed but not consulted.
 
 ### change
 
@@ -174,13 +174,10 @@ and README wording for the rejected Phred point.
 
 ### result
 
-1. Implemented all four fixes with reproductions first (1024x row-group size
-   inflation; 12-vs-1 BLAS threads; MISSING_EVIDENCE with zero findings).
-2. Caught a duplicated-findings bug in the first streaming refactor with the
-   finding-ID determinism test before commit.
+1. Implemented all four fixes with reproductions first (1024x row-group size inflation; 12-vs-1 BLAS threads; MISSING_EVIDENCE with zero findings).
+2. Caught a duplicated-findings bug in the first streaming refactor with the finding-ID determinism test before commit.
 3. Verified 188 tests (incl. slow) green, mypy strict and ruff clean.
-4. Discarded a contended benchmark run (uniform slowdown on untouched paths)
-   and committed a clean re-measurement under a tightened idle gate.
+4. Discarded a contended benchmark run (uniform slowdown on untouched paths) and committed a clean re-measurement under a tightened idle gate.
 
 ### change
 
@@ -209,11 +206,8 @@ declaration machinery or override flag.
 
 ### result
 
-1. Implemented the scan flag, the per-dataset metadata finding, and decision
-   wiring; the reviewer's uniform-Q60 example now yields a REPORTED REVIEW
-   instead of exit 2.
-2. Verified at scan, decision, and end-to-end levels; 187 non-slow tests green
-   at commit, full suite after; mypy and ruff clean.
+1. Implemented the scan flag, the per-dataset metadata finding, and decision wiring; the reviewer's uniform-Q60 example now yields a REPORTED REVIEW instead of exit 2.
+2. Verified at scan, decision, and end-to-end levels; 187 non-slow tests green at commit, full suite after; mypy and ruff clean.
 3. Verified the format-range citation (Cock et al. 2010) before relying on it.
 
 ### change
@@ -239,15 +233,34 @@ reference_id values silently kept otherwise passing groups COMPATIBLE.
 
 ### result
 
-1. Reproduced first (review -> COMPATIBLE, zero reference findings), then
-   fixed: the review branch emits a GROUP_DIFFERENT_REFERENCES warning and
-   sets metadata REVIEW with the guard that never downgrades an existing FAIL.
-2. Added a two-branch regression test (review -> REVIEW+warning; incompatible
-   -> INCOMPATIBLE, unchanged default); 188 non-slow tests green, mypy and
-   ruff clean.
+1. Reproduced first (review -> COMPATIBLE, zero findings), then fixed: the review branch warns (GROUP_DIFFERENT_REFERENCES) and sets metadata REVIEW, never downgrading an existing FAIL.
+2. Added a two-branch regression test (review -> REVIEW+warning; incompatible -> INCOMPATIBLE, unchanged default); 188 non-slow tests green, mypy and ruff clean.
 
 ### change
 
 Files: updated `src/seqconsistency/policy.py`, `tests/test_policy.py`,
 `README.md` (policy comment), `docs/misc/*` (this entry, rolling sync).
 Packages: none. Git: main, one fix commit.
+
+## Usage walkthrough for new operators
+
+```
+level: medium
+date: 2026-10-22
+```
+
+### description
+
+The user asked for an introduction on how to use seqconsistency: what inputs it
+needs, how to run it, and how to read the outputs.
+
+### result
+
+1. Answered with a five-step walkthrough (install, manifest, policy, run, interpret) grounded in the live CLI help output and current README sections; no code changed.
+
+### change
+
+Files: updated `docs/misc/requirements_audit.qmd` (this entry),
+`docs/misc/next_and_recommendation.qmd` (rolling sync: dropped the completed
+reference_mismatch item, renumbered). Packages: none. Git: main, one docs
+commit.

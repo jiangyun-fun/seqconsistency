@@ -5,17 +5,14 @@ author: "Yun Jiang"
 
 ## next
 
-1. M: Verify `reference_mismatch: review` behavior: policy.py emits no finding for
-   differing `reference_id` under `review` — add the review finding or a test
-   fixing the semantics.
-2. M: Decide `same_sample_id_required`/`same_assay_required`: keys are parsed but
+1. M: Decide `same_sample_id_required`/`same_assay_required`: keys are parsed but
    have no behavioral consumer; honor them or reject non-default values.
-3. M: Phase 2 candidates in priority order: sourmash sequence-content comparison,
+2. M: Phase 2 candidates in priority order: sourmash sequence-content comparison,
    reference-aware coverage comparison, processing-aware merged-read checks.
-4. M: Recalibrate example thresholds with genuine between-run data before any
+3. M: Recalibrate example thresholds with genuine between-run data before any
    production use (uncalibrated thresholds withhold approval by design).
-5. L: Profile pysam BAM iteration; per-record access still dominates the scan.
-6. L: Remove the stray `utput-format=concise` file in the repo root.
+4. L: Profile pysam BAM iteration; per-record access still dominates the scan.
+5. L: Remove the stray `utput-format=concise` file in the repo root.
 
 ## recommendation
 
