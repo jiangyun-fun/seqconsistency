@@ -18,6 +18,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from threadpoolctl import threadpool_limits
+
 from seqconsistency import metrics as metrics_mod
 from seqconsistency import parquet_io as pio
 from seqconsistency.bam import scan_bam
@@ -183,15 +185,26 @@ def _scan_one_timed(
     return outcome
 
 
+# Runtime native-thread limit for one process; the controller must stay
+# referenced or the limit is undone on garbage collection.
+_thread_limit: Any = None
+
+
 def _worker_init(threads_per_worker: int) -> None:
-    # Cap native math-library threads per worker to avoid CPU oversubscription
-    # (documented resource-sharing model in the README).
-    os.environ.setdefault("OMP_NUM_THREADS", str(threads_per_worker))
-    os.environ.setdefault("OPENBLAS_NUM_THREADS", str(threads_per_worker))
-    os.environ.setdefault("MKL_NUM_THREADS", str(threads_per_worker))
+    """Cap native math-library threads per worker to avoid oversubscription.
+
+    Environment variables (OMP/OPENBLAS/MKL_NUM_THREADS) are read when the
+    library loads — setting them after import caps nothing (measured: 12
+    OpenBLAS threads before and after late env changes). threadpoolctl
+    changes the pools' settings at runtime instead; pyarrow is capped through
+    its own API. Verified by tests/test_resources.py.
+    """
+    global _thread_limit
     import pyarrow
+    from threadpoolctl import threadpool_limits
 
     pyarrow.set_cpu_count(threads_per_worker)
+    _thread_limit = threadpool_limits(limits=threads_per_worker)
 
 
 def scan_datasets(
@@ -300,64 +313,66 @@ def run_check(config: CheckConfig) -> int:
             html_findings.append(f)
 
     try:
-        for group in sorted(groups):
-            members = [o for o in outcomes if o.spec.pool_group == group]
-            profile = members[0].spec.read_type.value
-            assay = members[0].spec.assay
-            resolver = policy.resolver_for(profile, assay)
-            prepared = prepare_group(members)
-            by_id = {o.spec.dataset_id: o for o in members}
-            (
-                metadata_status,
-                identity_status,
-                identity_level,
-                component_findings,
-            ) = group_components(members, policy)
-            # Findings stream out as they are produced (review round 3, point
-            # 3): retained per group are only the component findings (bounded
-            # by dataset count) and a unique reason-code list — never one
-            # group's full technical findings.
-            for f in component_findings:
-                _emit_finding(f)
-            assessment = TechnicalAssessment(policy, profile, assay)
-            tech_reason_codes: list[str] = []
+        with threadpool_limits(limits=resources.main_threads):
+            for group in sorted(groups):
+                members = [o for o in outcomes if o.spec.pool_group == group]
+                profile = members[0].spec.read_type.value
+                assay = members[0].spec.assay
+                resolver = policy.resolver_for(profile, assay)
+                prepared = prepare_group(members)
+                by_id = {o.spec.dataset_id: o for o in members}
+                (
+                    metadata_status,
+                    identity_status,
+                    identity_level,
+                    component_findings,
+                ) = group_components(members, policy)
+                # Findings stream out as they are produced (review round 3, point
+                # 3): retained per group are only the component findings (bounded
+                # by dataset count) and a unique reason-code list — never one
+                # group's full technical findings.
+                for f in component_findings:
+                    _emit_finding(f)
+                assessment = TechnicalAssessment(policy, profile, assay)
+                tech_reason_codes: list[str] = []
 
-            for id_a, id_b in generate_pairs(list(by_id)):
-                pair_rows = compare_pair(
-                    group,
-                    by_id[id_a],
-                    by_id[id_b],
-                    policy.min_observations,
-                    resolver,
-                    require_fastp=policy.require_fastp_evidence,
-                    prepared=prepared,
-                )
-                comparison_writer.write_rows(pair_rows)
-                comparisons_total += len(pair_rows)
-                if config.report_out is not None and len(html_comparisons) < MAX_COMPARISONS:
-                    html_comparisons.extend(pair_rows[: MAX_COMPARISONS - len(html_comparisons)])
-                for f in assessment.feed(pair_rows):
+                for id_a, id_b in generate_pairs(list(by_id)):
+                    pair_rows = compare_pair(
+                        group,
+                        by_id[id_a],
+                        by_id[id_b],
+                        policy.min_observations,
+                        resolver,
+                        require_fastp=policy.require_fastp_evidence,
+                        prepared=prepared,
+                    )
+                    comparison_writer.write_rows(pair_rows)
+                    comparisons_total += len(pair_rows)
+                    if config.report_out is not None and len(html_comparisons) < MAX_COMPARISONS:
+                        room = MAX_COMPARISONS - len(html_comparisons)
+                        html_comparisons.extend(pair_rows[:room])
+                    for f in assessment.feed(pair_rows):
+                        _emit_finding(f)
+                        if f.reason_code not in tech_reason_codes:
+                            tech_reason_codes.append(f.reason_code)
+                technical_status, tail = assessment.finalize()
+                for f in tail:
                     _emit_finding(f)
                     if f.reason_code not in tech_reason_codes:
                         tech_reason_codes.append(f.reason_code)
-            technical_status, tail = assessment.finalize()
-            for f in tail:
-                _emit_finding(f)
-                if f.reason_code not in tech_reason_codes:
-                    tech_reason_codes.append(f.reason_code)
-            decision, new_findings = finalize_group_decision(
-                members,
-                policy,
-                metadata_status,
-                identity_status,
-                identity_level,
-                component_findings,
-                technical_status,
-                tech_reason_codes,
-            )
-            decisions_rows.append(decision.to_row(policy))
-            for f in new_findings:
-                _emit_finding(f)
+                decision, new_findings = finalize_group_decision(
+                    members,
+                    policy,
+                    metadata_status,
+                    identity_status,
+                    identity_level,
+                    component_findings,
+                    technical_status,
+                    tech_reason_codes,
+                )
+                decisions_rows.append(decision.to_row(policy))
+                for f in new_findings:
+                    _emit_finding(f)
     except BaseException:
         comparison_writer.abort()
         findings_writer.abort()

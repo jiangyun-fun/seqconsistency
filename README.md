@@ -206,13 +206,15 @@ biological validation from synthetic software tests.
   **every** quality byte in the whole file is ≥ 64 **and** at least one is ≥ 90 —
   the rejection window is *entirely* uniform-high files (every base ≥ Q31, some
   ≥ Q58), which no standard platform or common simulator emits; a mixed file
-  containing Q60 records alongside ordinary ones is accepted. A rejected file that
-  you know is genuinely Phred+33 (synthetic uniform-high qualities) can be
-  processed after making the file carry the encoding it claims — for example
-  re-encode the qualities with a realistic distribution or a value below Q31 —
-  or report it as an issue; v1 has no override flag by design, because the same
-  signature is produced by genuine Phred+64 files that would otherwise be read
-  with every quality silently shifted by +31.
+  containing Q60 records alongside ordinary ones is accepted. A rejected file
+  must be resolved by **verifying its true encoding**, never by modifying the
+  data under assessment: a genuinely Phred+64 file must be re-exported as
+  Phred+33 from its source pipeline (the tool would otherwise read every
+  quality silently shifted by +31), and a genuinely uniform-high Phred+33 file
+  is a case to report upstream. This tool never alters or advises altering
+  input data. v1 has no encoding override flag by design, because the same
+  signature is produced by both encodings and a flag would only move the guess
+  from the tool to the operator.
 - **Paired-end synchronization** compares corresponding records — not just counts.
   Read names are normalized by taking the first whitespace-delimited token and
   removing a trailing `/1` or `/2` (covering legacy suffixes and Illumina/CASAVA
@@ -512,9 +514,14 @@ removed and anything already published by this run is removed best-effort.
   `--threads` = total logical CPU budget. Deterministic resolution rule:
   `workers = min(--workers, --threads)`,
   `threads_per_worker = max(1, threads // workers)`, remainder to the main process
-  (comparisons, Parquet writing). Worker native-thread pools (BLAS/OpenMP/pyarrow)
-  are capped per worker to avoid oversubscription. Contradictory settings are
-  resolved by this documented rule, not rejected.
+  (comparisons, Parquet writing). Native thread pools (BLAS/OpenMP) are capped **at
+  runtime** with `threadpoolctl` — per worker in the scan processes and to
+  `main_threads` around the comparison stage — and pyarrow through its own API.
+  Runtime limits are used because setting `OMP/OPENBLAS/MKL_NUM_THREADS` after
+  NumPy loads caps nothing (measured: 12 OpenBLAS threads before and after late
+  env changes); the actual pool settings are verified by test
+  (`tests/test_resources.py`). Contradictory settings are resolved by this
+  documented rule, not rejected.
 - Worker exceptions propagate with dataset context, cancel pending futures, and no
   outputs are published (tested).
 - Measured throughput/memory for this code version: see

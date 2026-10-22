@@ -146,6 +146,7 @@ environments:
       - pypi: ./
       - pypi: https://files.pythonhosted.org/packages/15/c0/fc0644b7ddcfb969e95845837143cb5173ddd6e06ee4ba5fc493cd9329b7/types_pyyaml-6.0.12.20260906-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/27/53/9b6dff8225ef3dbc203b1c2329d9efb2b66dfd51d5c2bf048c0676f47731/scipy_stubs-1.18.1.1-py3-none-any.whl
+      - pypi: https://files.pythonhosted.org/packages/43/3f/f88a53f60a472b46f4023f56d204dd7de33d34c5d2acbfa0d70a674e639e/threadpoolctl-3.7.0-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/79/9b/311c844a72b22b87b0bab85a448580650f11da67edf98e8358138cfd9831/pysam-0.24.1-cp312-cp312-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl
       - pypi: https://files.pythonhosted.org/packages/a9/2c/8de9d2c9a328419b28feb53081460d901e950b8b676914959a6e1beecc83/optype-0.19.0-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/b1/a4/9376b38b7387a0296b1f626b966e5503578625c9673777db1b45bf70acb0/numpy_typing_compat-20260602.2.5-py3-none-any.whl
@@ -2257,6 +2258,7 @@ packages:
   - pyarrow>=15
   - pysam>=0.22
   - pyyaml>=6.0
+  - threadpoolctl>=3
   - pytest>=8 ; extra == 'dev'
   - ruff>=0.6 ; extra == 'dev'
   - mypy>=1.10 ; extra == 'dev'
@@ -2275,6 +2277,11 @@ packages:
   - optype[numpy]>=0.15.0,<0.20
   - scipy>=1.18.1,<1.19 ; extra == 'scipy'
   requires_python: '>=3.12'
+- pypi: https://files.pythonhosted.org/packages/43/3f/f88a53f60a472b46f4023f56d204dd7de33d34c5d2acbfa0d70a674e639e/threadpoolctl-3.7.0-py3-none-any.whl
+  name: threadpoolctl
+  version: 3.7.0
+  sha256: cd8b60b5641b45c67bbf73c64c843235fc2d8a480c87389f52f5dbee893b86be
+  requires_python: '>=3.9'
 - pypi: https://files.pythonhosted.org/packages/79/9b/311c844a72b22b87b0bab85a448580650f11da67edf98e8358138cfd9831/pysam-0.24.1-cp312-cp312-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl
   name: pysam
   version: 0.24.1
