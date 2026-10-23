@@ -305,3 +305,24 @@ runner script, expected outcomes).
 ### change
 
 Files: appended this audit entry. Packages: none. Git: main, one docs commit.
+
+## Run the example suite into an explicit work dir
+
+```
+level: low
+date: 2026-10-23
+```
+
+### description
+
+The user asked to execute the example runner with an explicit work directory
+(the [work-dir] placeholder from the previous reply).
+
+### result
+
+1. Executed run_examples.sh with work dir /tmp/seqc-examples-out; all eight scenarios reproduced their documented decisions, spot-checked findings included.
+
+### change
+
+Files: appended this audit entry (run artifacts under /tmp/seqc-examples-out,
+outside the repo). Packages: none. Git: main, one docs commit.
