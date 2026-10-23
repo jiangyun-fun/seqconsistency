@@ -285,3 +285,23 @@ reference_id, and fastp_json are used for in the tool.
 
 Files: appended this audit entry (rolling file unchanged — no item completed).
 Packages: none. Git: main, one docs commit.
+
+## Explain how to run the examples
+
+```
+level: low
+date: 2026-10-23
+```
+
+### description
+
+The user asked how to run the bundled end-to-end examples (generator script,
+runner script, expected outcomes).
+
+### result
+
+1. Answered with verified runs this turn: generated all 8 scenarios and ran run_examples.sh; every scenario produced its documented decision (exit=1 scientific results).
+
+### change
+
+Files: appended this audit entry. Packages: none. Git: main, one docs commit.
