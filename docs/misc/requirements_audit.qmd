@@ -405,3 +405,27 @@ FASTQ files (barcode241, barcode242) from one run.
 Files: appended this audit entry (run inputs/outputs under /tmp/seqc-geneus-test,
 outside the repo; source data read-only). Packages: none. Git: main, one docs
 commit.
+
+## Pairwise geneus comparisons BC-1 vs BC-15 and BC-1 vs BC-11
+
+```
+level: medium
+date: 2026-10-26
+```
+
+### description
+
+The user asked for two pairwise runs against BC-1 (barcode241): versus BC-15
+and versus BC-11, read as barcode255 and barcode251 (240 + N mapping).
+
+### result
+
+1. Ran one invocation with two pool groups (same BC-1 file in both): both REVIEW; GC JSD 0.072 (BC-1 vs BC-15) and 0.274 (BC-1 vs BC-11) exceed 0.03, all other distances PASS.
+2. Located the distances: BC-15 shares BC-1's 78/22 two-bin GC mix with a 1% extra 0.54 subpopulation in BC-1; BC-11 flips the mix to 49/50.
+3. Confirmed the same-file-in-two-groups INFO finding (FILE_REUSED_ACROSS_GROUPS) fires as designed.
+
+### change
+
+Files: appended this audit entry (outputs under /tmp/seqc-geneus-test2,
+outside the repo; source data read-only). Packages: none. Git: main, one docs
+commit.
