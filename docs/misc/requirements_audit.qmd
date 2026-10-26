@@ -582,3 +582,26 @@ Files: created `conda-recipes:recipes/seqconsistency/meta.yaml` (commit
 520c6d4) + mirror audit; bioconda fork branch `seqconsistency` with the
 recipe. Packages: none. Git: conda-recipes main 520c6d4 + docs; bioconda PR
 #70765.
+
+## Finish public-readiness polish and verify the packaging session
+
+```
+level: medium
+date: 2026-10-26
+cross-repo: seqconsistency, conda-recipes
+```
+
+### description
+
+The user pointed at the transcript of the packaging session and asked to make the repo public ready, generate a conda recipe, and upload it to sibio. That session had completed the request; this turn verified its results and added the remaining GitHub polish.
+
+### result
+
+1. Verified: repo is public with MIT license and green ci; recipe.yaml and meta.yaml live in conda-recipes; v0.1.0 released.
+2. Verified: seqconsistency-0.1.0-pyh4616a5c_0.conda is on s3://conda/sibio/noarch (uploaded 16:23 UTC today).
+3. Verified: bioconda PR #70765 open — Lint, Linux, and Summary green; OSX-64 and ARM still running; no bot label comment yet.
+4. Implemented: repo description, homepage, and 9 topics; squash-only merge settings; branch protection on main (context ci, linear history, non-locking).
+
+### change
+
+Files: Updated docs/misc/requirements_audit.qmd (this entry). Git: this docs commit, pushed; GitHub: repo edit, settings PATCH, protection PUT (verified live).
