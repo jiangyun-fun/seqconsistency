@@ -479,3 +479,28 @@ Run0002 barcode-by-barcode.
 Files: appended this audit entry (outputs under /tmp/seqc-shifan-pairs and
 /tmp/seqc-shifan-runs, outside the repo; source data read-only). Packages:
 none. Git: main, one docs commit.
+
+## Remove host-specific references and explain the public flip
+
+```
+level: medium
+date: 2026-10-26
+```
+
+### description
+
+The user asked to delete the host-specific lines found by the readiness scan
+and to explain how to make the repository public.
+
+### result
+
+1. Scrubbed the hostname from benchmark results (md+json), removed the host field from bench.py/render_results.py, and dropped the internal pixi channels with a re-lock.
+2. Reworded doc quotes of the hostname/URLs to neutral descriptions; verified zero remaining references by git grep and 188 non-slow tests + ruff + mypy green.
+3. Answered the flip procedure: history keeps old values (no credentials), flip with gh, apply branch protection immediately after, verify CI/badges/release.
+
+### change
+
+Files: updated `benchmarks/{bench.py,render_results.py,results-2026-10-21.*,
+results-2026-10-22.*}`, `pixi.toml`, `pixi.lock`, `docs/plans/*` (2 scrubbed),
+`docs/misc/*`. Packages: none (env re-locked, same set). Git: main, commit
+2e97795 plus docs; pushed.

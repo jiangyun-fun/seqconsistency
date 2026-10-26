@@ -11,9 +11,9 @@ author: "Yun Jiang"
    reference-aware coverage comparison, processing-aware merged-read checks.
 3. M: Recalibrate example thresholds with genuine between-run data before any
    production use (uncalibrated thresholds withhold approval by design).
-4. M: Public-flip checklist: drop the internal pixi channel URLs and re-lock,
-   scrub or accept the benchmark hostname, apply branch protection (blocked
-   while private on a free plan), then flip visibility.
+4. M: Public flip: accept hostnames in git history (no credentials), flip
+   visibility with gh, apply branch protection (works once public), verify
+   CI/badges/release on the public repo.
 5. L: Profile pysam BAM iteration; per-record access still dominates the scan.
 
 ## recommendation
