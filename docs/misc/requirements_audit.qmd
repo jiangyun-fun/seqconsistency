@@ -528,3 +528,30 @@ credentials involved).
 
 Files: updated `docs/misc/*` (this entry, rolling sync). Packages: none. Git:
 main, one docs commit. Remote: visibility PUBLIC, branch protection on main.
+
+## Package seqconsistency for conda and deploy to sibio
+
+```
+level: medium
+date: 2026-10-26
+cross-repo: seqconsistency, conda-recipes
+```
+
+### description
+
+The user asked for a bioconda-style conda recipe in the conda-recipes repo,
+deployed to the sibio channel now, with a bioconda submission to follow later.
+
+### result
+
+1. Wrote recipes/seqconsistency/recipe.yaml (rattler-build v1, noarch python, v0.1.0 release sdist, sha256 computed from the URL) following the conda-recipes local skills and the conda-recipe skill.
+2. Built and verified: info/index.json depends exactly equals the pyproject runtime deps plus python; LICENSE ships; tests run seqconsistency --version/--help.
+3. Deployed to sibio (noarch) and verified end to end: pixi search resolves it and a clean pixi project installs and runs seqconsistency 0.1.0.
+
+### change
+
+Files: created `conda-recipes:recipes/seqconsistency/recipe.yaml` (commit
+a5c302b); deployed `seqconsistency-0.1.0-pyh4616a5c_0.conda` to the internal
+sibio channel (noarch) via the internal MinIO channel workspace. Packages:
+seqconsistency-0.1.0 -> internal sibio channel. Git: conda-recipes main
+a5c302b + mirror audit entry; seqconsistency main this docs commit.
