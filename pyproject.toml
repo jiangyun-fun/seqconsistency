@@ -34,6 +34,7 @@ dev = [
     "ruff>=0.6",
     "mypy>=1.10",
     "duckdb>=1.0",
+    "pandas>=2",
     "types-PyYAML>=6",
     "scipy-stubs>=1.18",
 ]

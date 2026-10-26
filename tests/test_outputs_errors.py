@@ -204,7 +204,9 @@ def test_write_table_read_back_pandas_polars_duckdb(tmp_path: Path):
     import duckdb
 
     rel = duckdb.sql(f"select count(*) c from '{out}'")
-    assert rel.fetchone()[0] == 1
+    # fetchone() was removed from relations in newer duckdb; limit(1).fetchall()
+    # works across versions.
+    assert rel.limit(1).fetchall()[0][0] == 1
 
 
 def test_worker_exception_propagates_and_cleans_up(tmp_path):
