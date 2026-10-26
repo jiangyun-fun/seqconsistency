@@ -555,3 +555,30 @@ a5c302b); deployed `seqconsistency-0.1.0-pyh4616a5c_0.conda` to the internal
 sibio channel (noarch) via the internal MinIO channel workspace. Packages:
 seqconsistency-0.1.0 -> internal sibio channel. Git: conda-recipes main
 a5c302b + mirror audit entry; seqconsistency main this docs commit.
+
+## Submit seqconsistency to bioconda
+
+```
+level: medium
+date: 2026-10-26
+cross-repo: seqconsistency, conda-recipes
+```
+
+### description
+
+The user asked to study how similar bioconda recipes (python, rust, meta.yaml)
+are written, then open a bioconda PR — with no AI attribution in the PR
+message.
+
+### result
+
+1. Studied bioconda precedents in the upstream checkout: aci (noarch python, pysam dep, MIT, entry point) and sam-formatter (our merged rust recipe) — and wrote the meta.yaml in those conventions.
+2. Validated locally with conda-build (py_0 artifact; depends mirror the pyproject runtime set) and opened bioconda PR #70765 from the fork; PR message carries no AI attribution.
+3. CI watch armed; the BiocondaBot label comment follows once every check is green.
+
+### change
+
+Files: created `conda-recipes:recipes/seqconsistency/meta.yaml` (commit
+520c6d4) + mirror audit; bioconda fork branch `seqconsistency` with the
+recipe. Packages: none. Git: conda-recipes main 520c6d4 + docs; bioconda PR
+#70765.
