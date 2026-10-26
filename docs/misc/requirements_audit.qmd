@@ -453,3 +453,29 @@ and asked to compare each pair.
 Files: appended this audit entry (outputs under /tmp/seqc-geneus-test3,
 outside the repo; source data read-only). Packages: none. Git: main, one docs
 commit.
+
+## Corrected shifan dataset: 14 within-run pairs and the two-run comparison
+
+```
+level: medium
+date: 2026-10-26
+```
+
+### description
+
+The user corrected the earlier data pointer: the pairs (BC-1 vs BC-15 ...
+BC-10 vs BC-24, plus BC-1 vs BC-11..14) live in the shifan Run0001 directory
+(BC-N = Group_0_BarcodeNN), and the follow-up ask compares Run0001 against
+Run0002 barcode-by-barcode.
+
+### result
+
+1. Re-ran the 14 pairs on the correct Run0001 files (3.4 s): all REVIEW; pair BC-1/BC-15 passes every threshold, 8 pairs exceed length (19-64 bp), 13 exceed GC (0.043-0.377).
+2. Ran all 24 same-barcode cross-run groups (4.8 s): 23/24 pass length (only bc12 at 10.8 vs 10.0), GC 0.014-0.043 straddles the 0.03 ceiling, quality passes everywhere.
+3. Calibration signal: same-barcode cross-run distances (GC<=0.044, length<=10.8) sit far below cross-barcode distances (GC to 0.377, length to 64) — the 0.03/10.0 ceilings land on the between-run band.
+
+### change
+
+Files: appended this audit entry (outputs under /tmp/seqc-shifan-pairs and
+/tmp/seqc-shifan-runs, outside the repo; source data read-only). Packages:
+none. Git: main, one docs commit.
