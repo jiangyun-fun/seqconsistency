@@ -29,13 +29,21 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8", "ruff>=0.6", "mypy>=1.10", "duckdb>=1.0"]
+dev = [
+    "pytest>=8",
+    "ruff>=0.6",
+    "mypy>=1.10",
+    "duckdb>=1.0",
+    "types-PyYAML>=6",
+    "scipy-stubs>=1.18",
+]
 
 [project.scripts]
 seqconsistency = "seqconsistency.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/jiangyunacw/seqconsistency"
+Homepage = "https://github.com/jiangyun-fun/seqconsistency"
+Repository = "https://github.com/jiangyun-fun/seqconsistency"
 
 [tool.setuptools.packages.find]
 where = ["src"]

@@ -1,5 +1,8 @@
 # seqconsistency
 
+[![CI](../../actions/workflows/ci.yml/badge.svg)](../../actions/workflows/ci.yml)
+[![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 `seqconsistency` assesses whether multiple sequencing datasets are structurally valid,
 technically consistent, and suitable for pooling under an explicit, configurable
 policy. It targets multiple technical sequencing runs declared to originate from the
