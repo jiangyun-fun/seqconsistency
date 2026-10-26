@@ -429,3 +429,27 @@ and versus BC-11, read as barcode255 and barcode251 (240 + N mapping).
 Files: appended this audit entry (outputs under /tmp/seqc-geneus-test2,
 outside the repo; source data read-only). Packages: none. Git: main, one docs
 commit.
+
+## Ten pairwise geneus comparisons BC-1..10 vs BC-15..24
+
+```
+level: medium
+date: 2026-10-26
+```
+
+### description
+
+The user supplied ten barcode pairs (BC-1 vs BC-15 through BC-10 vs BC-24)
+and asked to compare each pair.
+
+### result
+
+1. Ran one invocation with ten pool groups (4.5 s): all ten REVIEW; GC JSD exceeds in all pairs (0.072-0.892) and read_length W1 exceeds in eight (41.6-48.7 bp).
+2. Identified the structure: two read-length families (~535 vs ~580 bp; cross-family pairs fail length) and GC mixtures over three classes (~0.54/0.56/0.58) with barcode-specific weights.
+3. Closest pair 01/15 (same length family, same 78/22 GC mix, JSD 0.072); most distant 10/24 (GC classes nearly disjoint, JSD 0.892); quality distances stay 0.04-0.10 Phred everywhere.
+
+### change
+
+Files: appended this audit entry (outputs under /tmp/seqc-geneus-test3,
+outside the repo; source data read-only). Packages: none. Git: main, one docs
+commit.
