@@ -1,0 +1,635 @@
+---
+title: "seqconsistency — GitHub setup report: remote config, v0.1.0, public readiness"
+author: "Yun Jiang"
+date: today
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    toc-expand: true
+    html-math-method: mathjax
+    grid:
+      margin-width: 400px
+include-in-header:
+  text: |
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🛠️</text></svg>">
+---
+
+<!-- Plan: docs/plans/20261026-121701_github-setup.plan.qmd -->
+
+## feature
+
+### The remote repository now carries CI, release automation, and dependency updates
+
+```
+level: high
+```
+
+#### reason
+
+Both workflows ran to success on the remote: the second `ci` run concluded `completed/success`, and the `release` run for `v0.1.0` concluded `completed/success` with both artifacts attached.
+
+#### description
+
+```
+type: [text]
+```
+
+1. `ci.yml`: one job named `ci` on pushes to `main` and pull requests; Python 3.12; `pip install .[dev]`; `ruff check`, `mypy`, full `pytest` including slow tests.
+2. `release.yml`: tag `v*.*.*` or manual dispatch; `python -m build` produces the sdist and wheel; a `gh` step attaches `dist/*` to the release and creates it with generated notes when missing.
+3. `dependabot.yml`: `pip` and `github-actions` ecosystems, weekly, grouped.
+4. Action majors were resolved from latest releases at write time (`actions/checkout@v7`, `actions/setup-python@v7`); Dependabot is the safety net.
+
+#### before
+
+The remote had no workflows and no dependency updates; 12 local commits, including all Phase-1 work, sat unpushed.
+
+#### after
+
+Pushes to `main` and pull requests run ruff, mypy, and the full pytest suite; tags build and attach release artifacts; Dependabot groups weekly updates.
+
+#### evidence
+
+```
+level: high
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+`gh run list` runs 40268806314 (ci, success) and 40269237826 (release, success); `.github/workflows/{ci,release}.yml`; version queries `gh api repos/actions/checkout/releases/latest` → `v7.0.1`, `setup-python` → `v7.1.0`.
+
+:::
+
+## fix
+
+### The first CI run exposed two latent test dependencies and both were fixed
+
+```
+level: high
+```
+
+#### reason
+
+The first run failed on `ModuleNotFoundError: No module named 'pandas'` and a duckdb API removal; the second run passed on the same environment after two fixes.
+
+#### description
+
+```
+type: [text]
+```
+
+1. `tests/test_e2e.py:369` imports pandas for NaN-aware frame comparison in the cross-worker determinism test; the pixi dev env had masked the missing declaration. pandas joined the dev extra.
+2. duckdb removed `Relation.fetchone()` in versions newer than the local 1.5.6; the read-back test switched to `rel.limit(1).fetchall()[0][0]`, which works across versions.
+3. The failure is the value of a clean-room CI: the local environment had hidden both gaps.
+
+#### before
+
+`pip install .[dev]` did not install pandas, so the suite could not run in any fresh environment.
+
+#### after
+
+The suite runs green from a bare `pip install .[dev]` on `ubuntu-latest`.
+
+#### evidence
+
+```
+level: high
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+Run 40268368638 log (`--log-failed`): the two failures quoted in the session; local `pytest tests/test_outputs_errors.py` 13 passed after the fix; run 40268806314 success.
+
+:::
+
+## limitation
+
+### Branch protection cannot be applied while the repository is private on a free plan
+
+```
+level: medium
+```
+
+#### reason
+
+The protection API returned HTTP 403 with "Upgrade to GitHub Pro or make this repository public to enable this feature" for both PUT and GET.
+
+#### description
+
+```
+type: [text]
+```
+
+1. The intended ruleset (context `ci`, `enforce_admins: false`, linear history, no force pushes) is recorded in the plan and must be applied at the public flip.
+2. Until then, nothing enforces the `ci` check on pull requests; direct pushes to `main` remain possible by design for this solo repository.
+
+#### evidence
+
+```
+level: high
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+`gh api -X PUT repos/jiangyun-fun/seqconsistency/branches/main/protection` response in the session log (403, both directions).
+
+:::
+
+## caveat
+
+### The repository is not ready to flip public today; three items gate it
+
+```
+level: high
+```
+
+#### reason
+
+The readiness scan found one infrastructure disclosure and two flip-day tasks; the secrets scan found nothing.
+
+#### description
+
+```
+type: [text]
+```
+
+1. `pixi.toml:3` declares internal channel URLs (`file:///bioproj/tools/share/conda-jy-essentials`, `s3://conda/sibio`). No package in `pixi.lock` resolves from them, so the fix is deleting the two URLs and re-locking — mechanical, but it must happen before the flip.
+2. Branch protection (item above) applies only at the flip.
+3. `benchmarks/results-*.md` carry the workstation hostname (`jiangy-Precision-5820-Tower`); keep or scrub per taste.
+4. Not blockers: `docs/plans` and `docs/misc` are working-session records (no credentials; a `git log -S'ghp_'` pickaxe scan over all history is clean); the Python 3.11 support claim is untested in CI (3.12 only).
+5. The published sdist ships none of this: 46 files, `LICENSE` included, no `pixi.toml`, no `docs/`.
+
+#### evidence
+
+```
+level: high
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+`tar tzf seqconsistency-0.1.0.tar.gz` listing (46 files); grep hits for the channel URLs limited to `pixi.toml`; empty pickaxe output for token patterns.
+
+:::
+
+## assumption
+
+### "Release a version" means a GitHub release, not a PyPI upload
+
+```
+level: medium
+```
+
+#### reason
+
+The request said "release a version" with no registry named; the shipped workflow attaches artifacts to the GitHub release and does not publish to PyPI.
+
+#### description
+
+```
+type: [text]
+```
+
+1. If PyPI distribution is wanted, the release workflow can gain a trusted-publishing step; recorded as a recommendation.
+
+#### evidence
+
+```
+level: unknown
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+None
+
+:::
+
+## conclusion
+
+### The remote is configured and v0.1.0 is released with verified artifacts
+
+```
+level: high
+```
+
+#### reason
+
+Every configured surface was verified through the GitHub API after application rather than assumed.
+
+#### description
+
+```
+type: [text]
+```
+
+1. Settings verified: squash-only merges, merge/rebase off, delete-branch-on-merge on, wiki off, projects off; six topics applied.
+2. Release `v0.1.0` is public on the repository (not draft, not prerelease) with `seqconsistency-0.1.0-py3-none-any.whl` (88,590 bytes) and `seqconsistency-0.1.0.tar.gz` (136,174 bytes).
+3. Local hygiene fixed in the same push: MIT `LICENSE` file (the README declared MIT but no file existed), `pyproject.toml` Homepage corrected from the wrong owner, README badges, stray root artifact removed.
+
+#### evidence
+
+```
+level: high
+type: [table]
+```
+
+::: {.callout-note collapse="true"}
+
+`gh api repos/jiangyun-fun/seqconsistency --jq '{...}'` settings echo; `gh release view v0.1.0` asset listing in the session log.
+
+:::
+
+## recommendation
+
+### M: treat COMPATIBLE results as technical assessments only
+
+```
+level: medium
+```
+
+#### reason
+
+Genotype-based identity verification (Phase 3) remains necessary for biological claims.
+
+#### description
+
+```
+type: [text]
+```
+
+1. Pooling decisions rest on technical/metadata/declared-identity components, not verified sample identity.
+
+#### evidence
+
+```
+level: high
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+README "Decision engine".
+
+:::
+
+### L: add PyPI trusted publishing to the release workflow
+
+```
+level: low
+```
+
+#### reason
+
+The release currently reaches GitHub only; PyPI distribution is one workflow step plus a one-time registration.
+
+#### description
+
+```
+type: [text]
+```
+
+1. When wanted, register the package on PyPI and add a trusted-publishing upload step to `release.yml`.
+
+#### evidence
+
+```
+level: unknown
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+None
+
+:::
+
+### L: record calibration provenance next to the policy
+
+```
+level: low
+```
+
+#### reason
+
+`calibrated: true` claims must stay auditable.
+
+#### description
+
+```
+type: [text]
+```
+
+1. When calibrating, record the calibration dataset provenance beside the policy file.
+
+#### evidence
+
+```
+level: unknown
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+None
+
+:::
+
+## next
+
+### M: public-flip checklist
+
+```
+level: medium
+```
+
+#### reason
+
+Gates found by the readiness scan; the flip itself is a user decision.
+
+#### description
+
+```
+type: [text]
+```
+
+1. Drop the two internal channel URLs from `pixi.toml` and re-lock, scrub or accept the benchmark hostname, apply branch protection (unavailable while private), then flip visibility.
+
+#### evidence
+
+```
+level: high
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+This report, items under caveat and limitation.
+
+:::
+
+### M: decide `same_sample_id_required`/`same_assay_required`
+
+```
+level: medium
+```
+
+#### reason
+
+The keys are parsed but have no behavioral consumer.
+
+#### description
+
+```
+type: [text]
+```
+
+1. Honor them or reject non-default values.
+
+#### evidence
+
+```
+level: unknown
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+None
+
+:::
+
+### M: Phase 2 candidates
+
+```
+level: medium
+```
+
+#### reason
+
+Chosen and specified; blocked only by Phase-2 sequencing.
+
+#### description
+
+```
+type: [text]
+```
+
+1. Sourmash sequence-content comparison, reference-aware coverage comparison, processing-aware merged-read checks, in that order.
+
+#### evidence
+
+```
+level: unknown
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+None
+
+:::
+
+### M: recalibrate example thresholds with genuine between-run data
+
+```
+level: medium
+```
+
+#### reason
+
+Uncalibrated thresholds withhold approval by design.
+
+#### description
+
+```
+type: [text]
+```
+
+1. Follow the README calibration workflow, then set `calibrated: true`.
+
+#### evidence
+
+```
+level: unknown
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+None
+
+:::
+
+### L: profile pysam BAM iteration
+
+```
+level: low
+```
+
+#### reason
+
+Per-record access still dominates the scan.
+
+#### description
+
+```
+type: [text]
+```
+
+1. Profile and optimize the per-record loop.
+
+#### evidence
+
+```
+level: unknown
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+None
+
+:::
+
+### L: swap pandas for polars in tests and make the read-back test match its name
+
+```
+level: low
+```
+
+#### reason
+
+The user's Python standards prefer polars, and `test_write_table_read_back_pandas_polars_duckdb` asserts only the duckdb read-back.
+
+#### description
+
+```
+type: [text]
+```
+
+1. In the determinism test, replace pandas with `pl.from_arrow` + `polars.testing.assert_frame_equal` after verifying polars' NaN-equality semantics; extend or rename the read-back test accordingly.
+
+#### evidence
+
+```
+level: high
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+`tests/test_outputs_errors.py:182`; the only pandas import in tests is `tests/test_e2e.py:369`.
+
+:::
+
+## observation
+
+### A clean-room CI paid for itself on its first run
+
+```
+level: high
+```
+
+#### reason
+
+Both failures were invisible locally because the pixi environment satisfied the imports by accident.
+
+#### description
+
+```
+type: [text]
+```
+
+1. The local dev environment carries pandas and an older duckdb; the fresh runner did not and exposed both within one run.
+
+#### evidence
+
+```
+level: high
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+Run 40268368638 failed log; local duckdb 1.5.6 vs the runner's newer duckdb.
+
+:::
+
+## process
+
+### pushed to the remote on explicit request; verified every setting after applying it
+
+```
+status: right
+```
+
+#### description
+
+```
+type: [text]
+```
+
+1. The skill invocation asked to configure the remote and release a version, which authorizes push and tag; commits stayed staged per logical change.
+2. Every `gh api` mutation was re-read through the API (settings echo, release view, run conclusions) instead of trusting the write's response — the PATCH echo returned nulls and only the fresh GET confirmed the settings.
+
+#### evidence
+
+```
+level: high
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+Session log: the two-step settings verification; run-watch loops for both workflows.
+
+:::
+
+## change
+
+### GitHub-setup mutations
+
+```
+level: high
+```
+
+#### reason
+
+Recorded facts from git and the GitHub API at completion time.
+
+#### description
+
+```
+type: [table, text]
+```
+
+| Verb | Paths |
+|---|---|
+| Created | `LICENSE`, `.github/workflows/ci.yml`, `.github/workflows/release.yml`, `.github/dependabot.yml`, this report |
+| Updated | `pyproject.toml` (owner URLs, dev extra), `README.md` (badges), `tests/test_outputs_errors.py` (duckdb API), `docs/misc/*` |
+| Removed | `utput-format=concise` (trash) |
+
+1. Git: `main` commits `def6e25`, `f774e5b`, `74cf726`, `56360c0` plus the docs commit carrying this report; tag `v0.1.0` at `56360c0`; 12 commits pushed (`8b11a6f..56360c0`).
+2. Remote (not git): squash-only settings, delete-branch-on-merge, wiki/projects off, six topics, release `v0.1.0` with two assets.
+3. Packages: none.
+
+#### evidence
+
+```
+level: high
+type: [text]
+```
+
+::: {.callout-note collapse="true"}
+
+`git log --oneline`; `gh release view v0.1.0`; `gh api repos/jiangyun-fun/seqconsistency` settings echo.
+
+:::
+
+## other
+
+None

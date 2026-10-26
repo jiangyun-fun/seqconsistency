@@ -326,3 +326,32 @@ The user asked to execute the example runner with an explicit work directory
 
 Files: appended this audit entry (run artifacts under /tmp/seqc-examples-out,
 outside the repo). Packages: none. Git: main, one docs commit.
+
+## Configure GitHub remote, cut v0.1.0, assess public readiness
+
+```
+level: high
+date: 2026-10-26
+```
+
+### description
+
+The user invoked the repo-setup skill: configure the GitHub remote repository,
+release a version, and check whether the repository is ready to become public.
+
+### result
+
+1. Configured the private remote: ci/release workflows + dependabot, squash-only settings, six topics; first CI run failed, second green after two fixes.
+2. Released v0.1.0: tag pushed, workflow attached wheel + sdist; sdist verified clean (46 files, no internal paths, no pixi.toml).
+3. Assessed readiness: secrets scan clean; flip gates are internal pixi channel URLs, deferred branch protection (403 while private), benchmark hostname.
+4. Fixed locally: MIT LICENSE, wrong-owner Homepage, README badges, stray artifact removed; pandas dev dep declared and duckdb fetchone test fix.
+5. Answered two in-flight questions (why pandas is needed; why not polars) with code evidence; polars swap offered as follow-up.
+
+### change
+
+Files: created `LICENSE`, `.github/workflows/{ci,release}.yml`,
+`.github/dependabot.yml`, github-setup plan/report; updated `pyproject.toml`,
+`README.md`, `tests/test_outputs_errors.py`, `docs/misc/*`; removed
+`utput-format=concise`. Packages: none. Git: main, commits def6e25, f774e5b,
+74cf726, 56360c0 plus docs; tag v0.1.0; pushed 8b11a6f..HEAD. Remote: settings,
+topics, release v0.1.0 with two assets.

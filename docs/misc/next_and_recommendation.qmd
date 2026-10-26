@@ -11,12 +11,18 @@ author: "Yun Jiang"
    reference-aware coverage comparison, processing-aware merged-read checks.
 3. M: Recalibrate example thresholds with genuine between-run data before any
    production use (uncalibrated thresholds withhold approval by design).
-4. L: Profile pysam BAM iteration; per-record access still dominates the scan.
-5. L: Remove the stray `utput-format=concise` file in the repo root.
+4. M: Public-flip checklist: drop the internal pixi channel URLs and re-lock,
+   scrub or accept the benchmark hostname, apply branch protection (blocked
+   while private on a free plan), then flip visibility.
+5. L: Profile pysam BAM iteration; per-record access still dominates the scan.
+6. L: Swap pandas for polars in the determinism test (verify NaN-equality
+   semantics first) and make the read-back test assert what its name promises.
 
 ## recommendation
 
 1. M: Treat COMPATIBLE results as technical assessments only; genotype-based
    identity verification (Phase 3) remains necessary for biological claims.
-2. L: When calibrating, record the calibration dataset provenance next to the
+2. L: Add PyPI trusted publishing to the release workflow when the repository
+   goes public.
+3. L: When calibrating, record the calibration dataset provenance next to the
    policy so `calibrated: true` claims stay auditable.

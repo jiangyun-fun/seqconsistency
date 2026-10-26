@@ -1,0 +1,85 @@
+---
+title: "seqconsistency — configure GitHub remote, first release, public readiness"
+author: "Yun Jiang"
+date: today
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    toc-expand: true
+    html-math-method: mathjax
+    grid:
+      margin-width: 400px
+include-in-header:
+  text: |
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🛠️</text></svg>">
+---
+
+# Objective
+
+Configure the existing private remote `jiangyun-fun/seqconsistency` with
+production defaults, cut release v0.1.0, and deliver a public-readiness check.
+Making the repo public is NOT requested — the check reports blockers for a
+later flip.
+
+# Scope
+
+1. Local hygiene: MIT LICENSE file (README already declares MIT; none exists),
+   pyproject metadata fix (Homepage points at the wrong owner
+   `jiangyunacw`), dev extra gains the stub packages mypy needs
+   (`types-PyYAML`, `scipy-stubs`), README badges, remove the stray
+   `utput-format=concise` file.
+2. CI: `.github/workflows/ci.yml` — one job named `ci`, ubuntu-latest,
+   Python 3.12, `pip install .[dev]`, ruff + mypy + full pytest (incl. slow).
+   Action majors resolved at write time: `actions/checkout@v7`,
+   `actions/setup-python@v7` (latest releases 2026-10-26).
+3. Release: `.github/workflows/release.yml` — tag `v*.*.*` or manual dispatch,
+   `python -m build` (sdist+wheel), attach to the GitHub release via `gh`.
+4. Dependabot: `pip` + `github-actions`, weekly, grouped.
+5. Repo settings via `gh api -X PATCH` (squash-only, delete-branch-on-merge,
+   projects off), non-locking branch protection on `main` (context `ci`),
+   topics (bioinformatics, sequencing-qc, fastq, bam, python).
+6. Release v0.1.0: annotated tag, push, release workflow builds and attaches,
+   assets verified (`gh release view`).
+7. Public-readiness report: blockers and near-blockers found during the work.
+
+# Files to touch
+
+Created: `LICENSE`, `.github/workflows/{ci,release}.yml`,
+`.github/dependabot.yml`, this plan + report.
+Updated: `pyproject.toml`, `README.md`, `docs/misc/*`.
+Removed: `utput-format=concise` (trash).
+
+# Risks
+
+1. CI installs latest ruff/mypy — rule drift vs local pins could fail the run;
+   mitigation: watch the first run and pin if it drifts.
+2. Full pytest on a 2-core runner: slow memory tests allocate ~1 GiB; within
+   runner limits; fallback `-m 'not slow'` if timeouts.
+3. Branch protection before CI ever ran can strand the context — protection is
+   applied after the first green run.
+4. The 8 unpushed local commits land on the remote with this push — intended.
+
+# Verification (results)
+
+Executed 2026-10-26; report: `20261026-122944_github-setup.report.qmd`.
+
+1. First CI run FAILED (pandas missing from the dev extra; duckdb removed
+   `Relation.fetchone()`) — both fixed; second run green (run 40268806314).
+2. Branch protection NOT applied: the API returns 403 on private repos under
+   a free plan ("Upgrade to GitHub Pro or make this repository public").
+   Deferred to the public flip; the intended ruleset stays recorded here.
+3. Release `v0.1.0` verified: wheel (88,590 bytes) + sdist (136,174 bytes)
+   attached; sdist contents checked (46 files, no internal paths, no pixi.toml).
+4. Readiness verdict: not ready to flip today — internal pixi channel URLs,
+   deferred branch protection, benchmark hostname; secrets scan clean
+   (working tree + `git log -S'ghp_'` pickaxe).
+5. Settings verified via fresh GET (squash-only, delete-branch-on-merge,
+   wiki/projects off); six topics applied.
+
+# Original verification plan (superseded above)
+
+1. `gh run list` shows the CI run green on the pushed head.
+2. `gh api .../branches/main/protection` returns the applied ruleset.
+3. `gh release view v0.1.0` lists sdist + wheel assets.
+4. Readiness report enumerates blockers with severity and exact fixes.
