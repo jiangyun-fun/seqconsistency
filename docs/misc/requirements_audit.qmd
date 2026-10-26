@@ -381,3 +381,27 @@ Files: updated `tests/{test_e2e,test_outputs_errors}.py`, `pyproject.toml`,
 `pixi.toml`, `pixi.lock`, `docs/misc/*` (this entry, rolling sync). Packages:
 polars >=1 -> pixi default env (pypi) + pyproject dev extra. Git: main,
 commit ea33f6c plus docs; pushed.
+
+## First real-data run: two geneus barcode FASTQs
+
+```
+level: medium
+date: 2026-10-26
+```
+
+### description
+
+The user asked to run the tool as a test on two real geneus single-molecule
+FASTQ files (barcode241, barcode242) from one run.
+
+### result
+
+1. Ran check with an ont-scoped uncalibrated test policy: decision REVIEW; GC JSD 0.232 exceeds the illustrative 0.03 threshold, read-length/quality/N distances PASS.
+2. Diagnosed the exceed: both per-read GC distributions sit in two bins (0.56/0.58) with swapped weights (78/21 vs 55/44) — a mix-proportion shift, not different read types.
+3. Noted the TSV manifest requires all 13 headers with empty optional columns (first attempt exited 2).
+
+### change
+
+Files: appended this audit entry (run inputs/outputs under /tmp/seqc-geneus-test,
+outside the repo; source data read-only). Packages: none. Git: main, one docs
+commit.
