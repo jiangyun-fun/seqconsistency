@@ -1,0 +1,37 @@
+name: release
+on:
+  push:
+    tags: ["v*.*.*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to build"
+        required: true
+        type: string
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - id: tag
+        shell: bash
+        run: echo "name=${{ inputs.tag || github.ref_name }}" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v7
+        with:
+          ref: "${{ steps.tag.outputs.name }}"
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - run: pip install --upgrade pip build
+      - run: python -m build
+      - name: Attach to release
+        shell: bash
+        env:
+          GH_TOKEN: "${{ secrets.GITHUB_TOKEN }}"
+        run: |
+          set -euo pipefail
+          tag="${{ steps.tag.outputs.name }}"
+          gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 || \
+            gh release create "$tag" --title "$tag" --generate-notes --repo "$GITHUB_REPOSITORY"
+          gh release upload "$tag" dist/* --clobber --repo "$GITHUB_REPOSITORY"
