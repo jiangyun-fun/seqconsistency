@@ -2,7 +2,6 @@
   "seqconsistency_version": "0.1.0",
   "python": "3.12.15",
   "machine": "x86_64",
-  "host": "jiangy-Precision-5820-Tower",
   "timestamp": "2026-10-22T11:24:54+0800",
   "settings": {
     "reads": 2000000,

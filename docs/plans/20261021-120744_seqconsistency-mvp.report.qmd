@@ -154,7 +154,7 @@ type: [table, statistic]
 
 ::: {.callout-note collapse="true"}
 
-- Raw measurements: `benchmarks/results-2026-10-21.json` (host `jiangy-Precision-5820-Tower`, recorded 2026-10-21T14:47:29+0800).
+- Raw measurements: `benchmarks/results-2026-10-21.json` (recorded 2026-10-21T14:47:29+0800).
 - Rendered: `benchmarks/results-2026-10-21.md`.
 
 :::

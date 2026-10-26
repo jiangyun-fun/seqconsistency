@@ -495,7 +495,6 @@ def run_benchmarks(args: argparse.Namespace) -> dict:
         "seqconsistency_version": __import__("seqconsistency").__version__,
         "python": platform.python_version(),
         "machine": platform.machine(),
-        "host": platform.node(),
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
         "settings": {
             "reads": reads,

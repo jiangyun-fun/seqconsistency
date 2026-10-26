@@ -156,9 +156,9 @@ The readiness scan found one infrastructure disclosure and two flip-day tasks; t
 type: [text]
 ```
 
-1. `pixi.toml:3` declares internal channel URLs (`file:///bioproj/tools/share/conda-jy-essentials`, `s3://conda/sibio`). No package in `pixi.lock` resolves from them, so the fix is deleting the two URLs and re-locking — mechanical, but it must happen before the flip.
+1. `pixi.toml:3` declared two internal channel URLs (a local `file://` channel and a private `s3://` channel). No package in `pixi.lock` resolved from them; both were removed and the lock regenerated on 2026-10-26.
 2. Branch protection (item above) applies only at the flip.
-3. `benchmarks/results-*.md` carry the workstation hostname (`jiangy-Precision-5820-Tower`); keep or scrub per taste.
+3. `benchmarks/results-*.{md,json}` carried the workstation hostname; the host field was scrubbed from the files and removed from the bench/recorder tooling on 2026-10-26. Git history still contains the earlier committed values — no credentials are involved, only machine and channel names.
 4. Not blockers: `docs/plans` and `docs/misc` are working-session records (no credentials; a `git log -S'ghp_'` pickaxe scan over all history is clean); the Python 3.11 support claim is untested in CI (3.12 only).
 5. The published sdist ships none of this: 46 files, `LICENSE` included, no `pixi.toml`, no `docs/`.
 

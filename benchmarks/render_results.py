@@ -23,12 +23,11 @@ def main(argv: list[str] | None = None) -> int:
     lines.append("")
     lines.append(
         "All numbers below are **real measurements** produced by "
-        "`benchmarks/bench.py` on the recorded host; none are estimates."
+        "`benchmarks/bench.py`; none are estimates."
     )
     lines.append("")
     lines.append(f"- seqconsistency: `{doc['seqconsistency_version']}`")
-    lines.append(f"- Python: {doc['python']} · machine: {doc['machine']} · "
-                 f"host: `{doc['host']}`")
+    lines.append(f"- Python: {doc['python']} · machine: {doc['machine']}")
     lines.append(f"- Recorded: {doc['timestamp']}")
     settings = doc["settings"]
     lines.append(
