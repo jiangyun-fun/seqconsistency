@@ -12,9 +12,9 @@ author: "Yun Jiang"
 3. M: Recalibrate example thresholds with genuine between-run data — the shifan
    replicate band (GC ≤ 0.044, length ≤ 10.8) is the first such evidence.
 4. L: Profile pysam BAM iteration; per-record access still dominates the scan.
-5. L: Bioconda PR #70765 — comment `@BiocondaBot please add label` once every
-   CI check is green, then track review/merge and verify installability from
-   the bioconda channel.
+5. L: Bioconda PR #70765 — all CI green and labeled `please review & merge`;
+   track the maintainer review/merge (typically 1–2 days), then verify with
+   `pixi search seqconsistency -c bioconda`.
 
 ## recommendation
 
