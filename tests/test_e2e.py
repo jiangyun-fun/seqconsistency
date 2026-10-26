@@ -366,12 +366,15 @@ def test_reproducible_across_worker_counts(tmp_path: Path):
     policy = write_policy(tmp_path / "p.yaml")
     r1, out1, _ = run_cli(tmp_path / "run1", manifest, policy, workers=1, threads=1, expect_code=0)
     r2, out2, _ = run_cli(tmp_path / "run2", manifest, policy, workers=4, threads=4, expect_code=0)
-    import pandas as pd
+    import polars as pl
+    from polars.testing import assert_frame_equal
 
     for name in out1:
-        df1 = pq.read_table(out1[name]).to_pandas()
-        df2 = pq.read_table(out2[name]).to_pandas()
-        pd.testing.assert_frame_equal(df1, df2, check_dtype=False)  # NaN==NaN aware
+        df1 = pl.from_arrow(pq.read_table(out1[name]))
+        df2 = pl.from_arrow(pq.read_table(out2[name]))
+        # Exact on purpose: the outputs must be identical. Unlike plain `==`,
+        # polars treats null==null and NaN==NaN as equal (verified polars 2.1).
+        assert_frame_equal(df1, df2, check_exact=True)
 
 
 def test_fixed_seed_reproducibility(tmp_path: Path):
