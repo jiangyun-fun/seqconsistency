@@ -9,18 +9,16 @@ author: "Yun Jiang"
    have no behavioral consumer; honor them or reject non-default values.
 2. M: Phase 2 candidates in priority order: sourmash sequence-content comparison,
    reference-aware coverage comparison, processing-aware merged-read checks.
-3. M: Recalibrate example thresholds with genuine between-run data before any
-   production use (uncalibrated thresholds withhold approval by design).
-4. M: Public flip: accept hostnames in git history (no credentials), flip
-   visibility with gh, apply branch protection (works once public), verify
-   CI/badges/release on the public repo.
-5. L: Profile pysam BAM iteration; per-record access still dominates the scan.
+3. M: Recalibrate example thresholds with genuine between-run data — the shifan
+   replicate band (GC ≤ 0.044, length ≤ 10.8) is the first such evidence.
+4. L: Profile pysam BAM iteration; per-record access still dominates the scan.
 
 ## recommendation
 
 1. M: Treat COMPATIBLE results as technical assessments only; genotype-based
    identity verification (Phase 3) remains necessary for biological claims.
-2. L: Add PyPI trusted publishing to the release workflow when the repository
-   goes public.
-3. L: When calibrating, record the calibration dataset provenance next to the
-   policy so `calibrated: true` claims stay auditable.
+2. L: Add PyPI trusted publishing to the release workflow now that the
+   repository is public.
+3. L: When calibrating, record the calibration dataset provenance (shifan
+   Run0001/Run0002, 2026-10-23 transfer) beside any policy deriving thresholds
+   from it.

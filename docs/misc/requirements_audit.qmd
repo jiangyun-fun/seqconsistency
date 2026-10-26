@@ -504,3 +504,27 @@ Files: updated `benchmarks/{bench.py,render_results.py,results-2026-10-21.*,
 results-2026-10-22.*}`, `pixi.toml`, `pixi.lock`, `docs/plans/*` (2 scrubbed),
 `docs/misc/*`. Packages: none (env re-locked, same set). Git: main, commit
 2e97795 plus docs; pushed.
+
+## Flip the repository public
+
+```
+level: high
+date: 2026-10-26
+```
+
+### description
+
+The user confirmed the public flip ("Go ahead, flip it public"), on the stated
+interpretation that git history keeps the scrubbed hostname/channel names (no
+credentials involved).
+
+### result
+
+1. Flipped visibility via gh and verified PUBLIC; applied branch protection (context ci, linear history, no force pushes/deletions, admins exempt) and verified every field by GET.
+2. Verified the public side anonymously: badge 200, release wheel downloadable without auth (200), anonymous shallow clone works with LICENSE present, CI runs green.
+3. Direct pushes to main by the admin remain possible by design; PR merges now wait for the ci check.
+
+### change
+
+Files: updated `docs/misc/*` (this entry, rolling sync). Packages: none. Git:
+main, one docs commit. Remote: visibility PUBLIC, branch protection on main.
