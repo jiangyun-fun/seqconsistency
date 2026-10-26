@@ -355,3 +355,29 @@ Files: created `LICENSE`, `.github/workflows/{ci,release}.yml`,
 `utput-format=concise`. Packages: none. Git: main, commits def6e25, f774e5b,
 74cf726, 56360c0 plus docs; tag v0.1.0; pushed 8b11a6f..HEAD. Remote: settings,
 topics, release v0.1.0 with two assets.
+
+## Do the polars swap in tests
+
+```
+level: low
+date: 2026-10-26
+```
+
+### description
+
+The user confirmed the offered follow-up: replace pandas with polars in the
+determinism test (after verifying NaN-equality semantics) and make the
+read-back test assert what its name promises.
+
+### result
+
+1. Verified polars 2.1 semantics by probe first (null==null, NaN==NaN, also under check_exact=True), then swapped the determinism test to pl.from_arrow + assert_frame_equal(check_exact=True).
+2. Extended the read-back test to assert pandas, polars, and duckdb read-backs, matching its name and the README output claim; pandas stays a dev dependency for that contract.
+3. Verified 188 non-slow tests green, ruff and mypy clean; CI watched to green on commit ea33f6c.
+
+### change
+
+Files: updated `tests/{test_e2e,test_outputs_errors}.py`, `pyproject.toml`,
+`pixi.toml`, `pixi.lock`, `docs/misc/*` (this entry, rolling sync). Packages:
+polars >=1 -> pixi default env (pypi) + pyproject dev extra. Git: main,
+commit ea33f6c plus docs; pushed.

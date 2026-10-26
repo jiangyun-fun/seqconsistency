@@ -15,8 +15,6 @@ author: "Yun Jiang"
    scrub or accept the benchmark hostname, apply branch protection (blocked
    while private on a free plan), then flip visibility.
 5. L: Profile pysam BAM iteration; per-record access still dominates the scan.
-6. L: Swap pandas for polars in the determinism test (verify NaN-equality
-   semantics first) and make the read-back test assert what its name promises.
 
 ## recommendation
 
